@@ -44,6 +44,28 @@ your client → moe-l2 proxy (:11435) → ollama/llama.cpp (:11434)
 4. Request is forwarded to the backend — experts already hot in cache
 5. Cache hit rate typically exceeds 85% within the same session
 
+## System architecture
+
+moe-l2 uses a 4-tier hierarchical scheduling model that decouples expert storage from GPU memory:
+
+```
+┌───────────────────────────────────────────────────┐
+│  L0 — CPU Router                                  │
+│  Gate network routing + domain classification     │
+├───────────────────────────────────────────────────┤
+│  L1 — GPU VRAM                                    │
+│  Active inference: experts + KV cache              │
+├───────────────────────────────────────────────────┤
+│  L2 — RAM Hot Cache (this project)                │
+│  Domain-aware expert preloading (LRU, mmap)       │
+├───────────────────────────────────────────────────┤
+│  L3 — SSD Cold Storage                            │
+│  Full expert weights, loaded on demand             │
+└───────────────────────────────────────────────────┘
+```
+
+Each tier is a storage layer. Close to GPU = fast but small; far from GPU = slow but cheap. The scheduler keeps what's active in fast memory and moves everything else down the stack.
+
 ## Features
 
 - **Zero-code setup** — install, point to a model, done
