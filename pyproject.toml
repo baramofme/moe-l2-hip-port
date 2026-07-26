@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "moe-l2"
+version = "0.1.0"
+description = "MoE inference L2 hot-cache scheduler — run large MoE models on consumer GPUs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["moe", "llm", "inference", "caching", "ollama"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/yalund/moe-l2"
+Source = "https://github.com/yalund/moe-l2"
+
+[project.scripts]
+moe-l2 = "moe_l2.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["moe_l2*"]

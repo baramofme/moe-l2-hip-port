@@ -75,6 +75,24 @@ Each tier is a storage layer. Close to GPU = fast but small; far from GPU = slow
 - **GPU mode** — A3-patched llama-server with expert-offloading, verified on RTX 4090
 - **Library API** — `from moe_l2 import predict, L2Cache` for embedded use
 
+## CLI reference
+
+| Command | Description |
+|---------|-------------|
+| `moe-l2 start --model <path> --l2-size <size>` | Start proxy + cache |
+| `moe-l2 start --model <path> --gpu` | Start with GPU-accelerated llama-server |
+| `moe-l2 stats --port <port>` | Show live cache stats |
+| `moe-l2 download-bins [--release TAG]` | Download pre-built GPU binaries from GitHub |
+| `moe-l2 stop --port <port>` | Stop proxy |
+
+Options:
+- `--model auto`: scan `/opt/data/models/*.gguf`
+- `--l2-size 4GB` / `--l2-size 512MB`: target cache size
+- `--port 11435` (default)
+- `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU)
+
+> **GPU binaries**: The repo does not track 500MB+ .so files. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+
 ## More data
 
 | Metric | Standard | With moe-l2 |
