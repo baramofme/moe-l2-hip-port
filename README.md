@@ -86,6 +86,8 @@ Each tier is a storage layer. Close to GPU = fast but small; far from GPU = slow
 
 The speed tradeoff is predictable: experts load from system RAM via PCIe. This is an intentional design choice for users who prioritize memory efficiency over peak throughput — ideal for home labs, edge deployments, and budget hardware.
 
+> **Note:** 8.6 t/s is the current Phase 2 measurement (experts on CPU, PCIe-loaded each step). The next optimization — GPU LRU expert cache — keeps hot experts in VRAM and targets **40+ t/s**, eliminating the PCIe bottleneck for cache hits.
+
 ## Project status
 
 - ✅ Domain predictor (keyword + optional semantic)
