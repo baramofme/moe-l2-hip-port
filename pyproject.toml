@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0,<77.0", "wheel"]
+requires = ["setuptools==69.5.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -30,8 +30,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yalund/moe-l2"
-Source = "https://github.com/yalund/moe-l2"
+Homepage = "https://github.com/yalun753/yalund-moe-l2"
+Source = "https://github.com/yalun753/yalund-moe-l2"
 
 [project.optional-dependencies]
 predictor = ["sentence-transformers>=3.0"]
@@ -42,12 +42,9 @@ moe-l2 = "moe_l2.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["moe_l2*"]
+exclude = ["moe_l2.bin", "moe_l2.bin.*"]
 
 [tool.setuptools.package-data]
 moe_l2 = [
     "data/*.json",
-    "bin/llama-server",
-    "bin/libggml*.so*",
-    "bin/libllama*.so*",
-    "bin/libmtmd*.so*",
 ]

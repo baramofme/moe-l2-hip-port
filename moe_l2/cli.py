@@ -35,7 +35,7 @@ _GGUF_PATHS = [
 ]
 
 # GitHub release info
-_GITHUB_REPO = "yalund/moe-l2"
+_GITHUB_REPO = "yalun753/yalund-moe-l2"
 _BINS_ASSET_URL = (
     "https://github.com/{repo}/releases/download/{tag}/llama_bins.tar.gz"
 )
@@ -78,13 +78,13 @@ def _parse_l2_size(size_str: str, expert_size: int) -> int:
     return max(slots, 1)
 
 
-def _ensure_bins() -> bool:
+def _ensure_bins(tag: str | None = None) -> bool:
     """Download bundled binaries if not present. Returns True if ready."""
     if _LLAMA_SERVER_PATH.exists():
         return True
     print(f"  [download-bins] Binary not found at {_BUNDLE_DIR}")
-    print(f"  Run: moe-l2 download-bins")
-    return False
+    print(f"  Auto-downloading from GitHub Releases...")
+    return _download_bins(tag or _DEFAULT_BINS_TAG)
 
 
 def _download_bins(tag: str) -> bool:
