@@ -1,24 +1,40 @@
 [build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=68.0,<77.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "moe-l2"
-version = "0.1.0"
+version = "0.3.0"
 description = "MoE inference L2 hot-cache scheduler — run large MoE models on consumer GPUs"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-keywords = ["moe", "llm", "inference", "caching", "ollama"]
+keywords = ["moe", "mixture-of-experts", "llm", "inference", "caching", "ollama", "llama.cpp"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+]
+dependencies = [
+    "httpx>=0.27",
+    "gguf>=0.10",
 ]
 
 [project.urls]
 Homepage = "https://github.com/yalund/moe-l2"
 Source = "https://github.com/yalund/moe-l2"
+
+[project.optional-dependencies]
+predictor = ["sentence-transformers>=3.0"]
 
 [project.scripts]
 moe-l2 = "moe_l2.cli:main"
@@ -26,3 +42,12 @@ moe-l2 = "moe_l2.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["moe_l2*"]
+
+[tool.setuptools.package-data]
+moe_l2 = [
+    "data/*.json",
+    "bin/llama-server",
+    "bin/libggml*.so*",
+    "bin/libllama*.so*",
+    "bin/libmtmd*.so*",
+]

@@ -2,21 +2,32 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.venv/
+env/
+venv/
+
+# Build artifacts
 dist/
 build/
 
-# Environment
-.env
-.venv/
-venv/
+# Bundled binaries — hosted in GitHub Release, not tracked in git
+moe_l2/bin/
+
+# Project-specific — dev scripts at root
+run_proxy_*.py
+test_cache.py
+
+# Test logs
+测试日志/
 
 # IDE
 .vscode/
 .idea/
+*.swp
 
 # OS
 .DS_Store
 Thumbs.db
 
-# L2 cache data (generated at runtime)
-/tmp/moe_l2_experts/
+# Environment
+.env

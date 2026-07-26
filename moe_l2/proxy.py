@@ -1,11 +1,7 @@
-"""
-Ollama transparent proxy — intercepts /api/generate requests.
+"""Ollama transparent proxy — intercepts /api/generate requests.
 
 Sits between the user and ollama, adding L2 cache preloading
 based on domain prediction before forwarding the request.
-
-Phase 2: minimal proxy that forwards all requests.
-Cache preloading integration comes after the basic proxy works.
 """
 
 import json
@@ -13,89 +9,196 @@ import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
-from .predictor import predict
+import httpx
+
+from .predictor import predict, load_mapping
 from .cache import L2Cache
 
 logger = logging.getLogger("moe-l2-proxy")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 11435
-OLLAMA_HOST = "http://127.0.0.1:11434"
+OLLAMA_BASE = "http://127.0.0.1:11434"
+LLAMA_SERVER_BASE = "http://127.0.0.1:11436"
+
+# Headers NOT forwarded to the client (hop-by-hop or internal)
+_HOP_BY_HOP = frozenset({
+    "content-length", "content-encoding", "transfer-encoding",
+    "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailers", "upgrade", "server",
+})
 
 
 class MoEL2ProxyHandler(BaseHTTPRequestHandler):
-    """HTTP request handler that proxies to ollama with L2 preloading."""
+    """HTTP request handler that proxies to backend with L2 preloading."""
 
     cache: Optional[L2Cache] = None
+    backend_url: str = OLLAMA_BASE  # overridden per-instance by start_proxy
+
+    # ── Domain prediction & preloading ──────────────────────────
+
+    def _predict_and_preload(self, text: str):
+        """Predict domain and trigger expert preload."""
+        if not self.cache:
+            return
+        try:
+            domain = predict(text)
+            logger.info("Predicted domain: %s", domain)
+            expert_map = load_mapping()
+            self.cache.preload_domain(domain, expert_map)
+            logger.info("Preloaded experts for domain=%s", domain)
+        except Exception as e:
+            # Non-fatal: forwarding still happens even if preload fails
+            logger.warning("Preload failed: %s", e)
+
+    # ── Entry points ────────────────────────────────────────────
+
+    def do_GET(self):
+        if self.path == "/stats":
+            self._handle_stats()
+        elif self.path == "/health":
+            self._send_json({"status": "ok", "cache_active": self.cache is not None})
+        else:
+            self._proxy_request("GET")
 
     def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
         if self.path == "/api/generate":
-            self._handle_generate()
+            self._handle_api("generate", body)
         elif self.path == "/api/chat":
-            self._handle_chat()
+            self._handle_api("chat", body)
         else:
-            self._forward_request()
+            self._proxy_request("POST", body)
 
-    def _handle_generate(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+    # ── API handlers ────────────────────────────────────────────
+
+    def _handle_api(self, endpoint: str, body: bytes):
+        """Handle /api/generate or /api/chat — predict, preload, forward."""
         try:
             data = json.loads(body)
-            prompt = data.get("prompt", "")
-            domain = predict(prompt)
-            logger.info("Predicted domain: %s", domain)
+            if endpoint == "generate":
+                text = data.get("prompt", "")
+            else:
+                messages = data.get("messages", [])
+                text = messages[-1].get("content", "") if messages else ""
+            if text:
+                self._predict_and_preload(text)
+        except (json.JSONDecodeError, IndexError, KeyError) as e:
+            logger.warning("Failed to parse request body: %s", e)
 
-            # Trigger async preload (Phase 2: log only)
-            if self.cache:
-                expert_ids = []  # TODO: domain_to_expert_ids(domain, ...)
-                logger.info(
-                    "Would preload %d experts for domain=%s",
-                    len(expert_ids), domain,
-                )
-        except json.JSONDecodeError:
-            logger.warning("Failed to decode request body")
+        self._forward_to_backend(body, f"/api/{endpoint}")
 
-        # Forward to ollama (Phase 2: direct pass-through)
-        self._forward_to_ollama(body)
+    # ── Backend forwarding ───────────────────────────────────────
 
-    def _handle_chat(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+    def _forward_to_backend(self, body: bytes, path: str):
+        """Forward request to backend, handling streaming or blocking."""
+        url = f"{self.backend_url}{path}"
+
         try:
             data = json.loads(body)
-            messages = data.get("messages", [])
-            if messages:
-                last_msg = messages[-1].get("content", "")
-                domain = predict(last_msg)
-                logger.info("Predicted domain (chat): %s", domain)
-        except json.JSONDecodeError:
-            pass
+            is_stream = data.get("stream", True)
+        except (json.JSONDecodeError, KeyError):
+            is_stream = False
 
-        self._forward_to_ollama(body)
+        client = httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0))
+        try:
+            if is_stream:
+                self._forward_stream(client, url, body)
+            else:
+                self._forward_blocking(client, url, body)
+        finally:
+            client.close()
 
-    def _forward_to_ollama(self, body: bytes):
-        """Forward request to actual ollama server.
+    def _forward_stream(self, client: httpx.Client, url: str, body: bytes):
+        """SSE-stream the response from backend to the client."""
+        try:
+            with client.stream(
+                "POST",
+                url,
+                content=body,
+                headers={"Content-Type": "application/json"},
+            ) as resp:
+                self.send_response(resp.status_code)
+                # SSE-specific headers
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
 
-        Phase 2: stub — returns a placeholder response.
-        Phase 3: real HTTP forwarding with streaming support.
-        """
-        # TODO: forward via urllib/httpx to OLLAMA_HOST
-        self.send_response(200)
+                for chunk in resp.iter_bytes():
+                    if chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+        except httpx.ConnectError:
+            self._send_error(502, f"cannot connect to backend at {self.backend_url}")
+        except httpx.TimeoutException:
+            self._send_error(504, "backend request timed out")
+
+    def _forward_blocking(self, client: httpx.Client, url: str, body: bytes):
+        """Non-streaming forward: wait for full response, return as-is."""
+        try:
+            resp = client.post(
+                url,
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+            self.send_response(resp.status_code)
+            for key, value in resp.headers.items():
+                if key.lower() not in _HOP_BY_HOP:
+                    self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(resp.content)
+        except httpx.ConnectError:
+            self._send_error(502, f"cannot connect to backend at {self.backend_url}")
+        except httpx.TimeoutException:
+            self._send_error(504, "backend request timed out")
+
+    def _proxy_request(self, method: str, body: bytes = None):
+        """Generic HTTP proxy for endpoints like /api/tags, /api/show, etc."""
+        url = f"{self.backend_url}{self.path}"
+        client = httpx.Client(timeout=30.0)
+        try:
+            req = client.build_request(method, url, content=body)
+            resp = client.send(req)
+            self.send_response(resp.status_code)
+            for key, value in resp.headers.items():
+                if key.lower() not in _HOP_BY_HOP:
+                    self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(resp.content)
+        except httpx.ConnectError:
+            self._send_error(502, f"cannot connect to ollama at {OLLAMA_BASE}")
+        finally:
+            client.close()
+
+    def _send_json(self, data: dict, status: int = 200):
+        """Send a JSON response."""
+        body = json.dumps(data).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        response = {
-            "model": "moe-l2-proxy",
-            "response": "[moe-l2 proxy active — forwarding to ollama]",
-            "done": True,
-        }
-        self.wfile.write(json.dumps(response).encode())
+        self.wfile.write(body)
 
-    def _forward_request(self):
-        """Forward non-generate requests directly."""
-        # TODO: generic HTTP proxy
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'{"status": "ok"}')
+    def _send_error(self, status: int, message: str):
+        """Send a JSON error response."""
+        logger.error(message)
+        self._send_json({"error": message}, status)
+
+    def _handle_stats(self):
+        """Return cache statistics as JSON (for 'moe-l2 stats')."""
+        if not self.cache:
+            self._send_json({"error": "cache not initialized"}, status=503)
+            return
+        try:
+            stats = self.cache.stats()
+            # Return compact version for CLI consumption
+            self._send_json(stats)
+        except Exception as e:
+            self._send_json({"error": str(e)}, status=500)
 
     def log_message(self, fmt, *args):
         logger.info(fmt, *args)
@@ -105,11 +208,23 @@ def start_proxy(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     cache: Optional[L2Cache] = None,
+    backend_url: str = OLLAMA_BASE,
 ):
-    """Start the moe-l2 proxy server."""
+    """Start the moe-l2 proxy server.
+
+    Args:
+        host: Listen address.
+        port: Listen port.
+        cache: Optional L2Cache instance for domain preloading.
+        backend_url: Upstream inference server URL.
+    """
     MoEL2ProxyHandler.cache = cache
+    # Patch the backend URL onto the handler
+    MoEL2ProxyHandler.backend_url = backend_url
+    import functools
     server = HTTPServer((host, port), MoEL2ProxyHandler)
-    logger.info("moe-l2 proxy listening on %s:%s", host, port)
+    server.timeout = 0.5  # allow KeyboardInterrupt to work
+    logger.info("moe-l2 proxy listening on %s:%s → %s", host, port, backend_url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
