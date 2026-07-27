@@ -1,5 +1,7 @@
 # moe-l2
 
+[**中文**](README_zh.md) | English
+
 **Got an 8GB GPU? You can now run 32B MoE models.**  
 moe-l2 slashes VRAM by up to 91% — only active experts live on your GPU, the rest stay on CPU.
 
