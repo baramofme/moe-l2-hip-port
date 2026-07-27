@@ -8,13 +8,13 @@ version = "0.3.0"
 description = "MoE inference L2 hot-cache scheduler — run large MoE models on consumer GPUs"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Proprietary"}
+license = {text = "Apache-2.0"}
 keywords = ["moe", "mixture-of-experts", "llm", "inference", "caching", "ollama", "llama.cpp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: Other/Proprietary License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -30,8 +30,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yalun753/yalund-moe-l2"
-Source = "https://github.com/yalun753/yalund-moe-l2"
+Homepage = "https://github.com/yalun753/moe-l2"
+Source = "https://github.com/yalun753/moe-l2"
 
 [project.optional-dependencies]
 predictor = ["sentence-transformers>=3.0"]

@@ -95,7 +95,7 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU)
 
-> **GPU binaries**: The repo does not track 500MB+ .so files. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: The repo does not track 500MB+ .so files in git. Pre-built binaries are available as a GitHub Release artifact. Run `moe-l2 download-bins` to fetch them.
 
 ## More data
 
@@ -139,4 +139,4 @@ For desktop users who already run llama.cpp, moe-l2 adds expert caching with one
 
 ## License
 
-**All Rights Reserved.** This software is proprietary and confidential.
+**Apache 2.0.** See [LICENSE](LICENSE) for details.
