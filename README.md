@@ -110,6 +110,23 @@ The speed tradeoff is predictable: experts load from system RAM via PCIe. This i
 
 > **Note:** 8.6 t/s is the current Phase 2 measurement (experts on CPU, PCIe-loaded each step). The next optimization — GPU LRU expert cache — keeps hot experts in VRAM and targets **40+ t/s**, eliminating the PCIe bottleneck for cache hits.
 
+## Related work
+
+[TencenYoutuResearch/Palm-Infra](https://github.com/TencentYoutuResearch/Palm-Infra) / **mollm** is a C++ inference engine from Tencent that runs MoE models with SSD expert offload on Apple Silicon / ARM Linux — achieving 16.22 t/s on a 122B MoE model with 16 GB peak RSS.
+
+moe-l2 and mollm share the same core idea (expert caching + tiered storage), but target different users:
+
+| Dimension | mollm (Tencent) | moe-l2 |
+|-----------|-----------------|--------|
+| Platform | Apple Silicon / ARM Linux | **Linux x86_64 + GPU (NVIDIA)** |
+| Installation | Build from source (CMake + C++) | **pip install moe-l2** |
+| Model compatibility | Qwen-series only | **Any llama.cpp-supported MoE** (DeepSeek, Qwen, Mixtral, etc.) |
+| Backend | Custom C++ engine | **llama.cpp proxy** — zero migration |
+| GPU acceleration | CPU only (NEON) | **CUDA + GPU VRAM** |
+| Target user | Mobile / edge device developers | **Desktop homelab users** |
+
+For desktop users who already run llama.cpp, moe-l2 adds expert caching with one command — no engine swap required.
+
 ## Project status
 
 - ✅ Domain predictor (keyword + optional semantic)
