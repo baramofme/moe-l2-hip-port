@@ -1,98 +1,146 @@
 # moe-l2
 
-**8GB 显卡也能跑 32B MoE 大模型。**  
-moe-l2 最高可砍掉 91% 的显存占用 — 只有活跃的 expert 驻留 GPU，其余保留在 CPU 内存。
+English | [**中文**](README_zh.md)
 
-完整英文说明见 [README.md](README.md)。
+[![PyPI version](https://img.shields.io/pypi/v/moe-l2)](https://pypi.org/project/moe-l2/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
+
+**8GB 显卡也能跑 32B MoE 大模型 — 省 91% 显存，一行 pip 搞定。**
 
 | 你的显卡 | 正常能跑 | **用了 moe-l2** |
 |----------|---------|-----------------|
 | 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ |
-| 8 GB | 7B 稠密模型 | Qwen2.5-32B-A3B (32B MoE) ✅ |
+| **8 GB** | 7B 稠密模型 | **Qwen2.5-32B-A3B (32B MoE) ✅** |
 | 12 GB | 13B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 
 ```bash
 pip install moe-l2
+moe-l2 download-bins
 moe-l2 start --model model.gguf --l2-size 4GB
 ```
 
-## 为什么需要这个东西
+连接 `localhost:11435`，现有工具（curl、Open WebUI、LangChain）无需改配置。
 
-MoE（混合专家）模型动辄几十上百个"专家"，但每步推理只激活其中几个。标准推理栈会把所有 expert 权重全塞进 GPU 显存，80-95% 的内存被闲置权重白白占用。
+---
 
-moe-l2 会先判断你的输入属于哪个领域（代码、数学、中文技术等），把相关的 expert 预加载到基于 mmap 的 LRU 缓存中，其余留在 CPU/系统内存。GPU 里只放当前需要的 expert 集合。
+## moe-l2 能帮你解决什么
 
-## 基准测试
+MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。标准推理栈会把所有 expert 全塞进显存——80-95% 的内存被闲置权重白白占用。
 
-基于 **DeepSeek-V2-Lite**（160 亿参数，64 expert，top-6）Q2_K 量化：
+**moe-l2 只让活跃 expert 驻留 GPU，其余留在内存或硬盘，需要时再换入。**
 
-| 模式 | GPU 显存 | 生成速度 |
-|------|----------|---------|
-| 标准（全部 expert 在 GPU） | 23.3 GB | 65 t/s |
-| **moe-l2**（热缓存 expert） | **2.2 GB** | **8.6 t/s** |
-| **节省** | **91% 显存** | 原始速度的 13% |
+### 实测数据
 
-原本需要 24 GB 显卡才能跑的模型，moe-l2 把它压到 **2.2 GB** — 省下 22 GB 做其他事，或者让 8 GB / 4 GB 的卡也能跑。
+基于 **DeepSeek-V2-Lite**（160 亿参数，64 expert，top-6，Q2_K 量化）：
 
-## 平台要求
+| 模式 | GPU 显存 | 速度 | 意味着什么 |
+|------|----------|------|-----------|
+| 标准（全 expert 在 GPU） | 23.3 GB | 65 t/s | 需要 24 GB 显卡 |
+| **moe-l2**（热缓存 expert） | **2.2 GB** | **8.6 t/s** | **4 GB 卡也能跑** |
+| **节省** | **91% 显存** | 速度的 13% | 腾出 ~20 GB 做别的 |
 
-**仅 Linux x86_64。** 预编译的 GPU 二进制（CUDA `.so` 文件 + `llama-server`）编译目标为 Linux AMD64。暂不支持 macOS、Windows 和 ARM Linux。
+不开 moe-l2，8 GB 显卡**根本无法加载这个模型**——直接 OOM。开了之后只用 2.2 GB，还剩 5.8 GB 干别的。
 
-## 快速开始
+> 8.6 t/s 是当前 Phase 2 实测值（expert 在 CPU 侧，每步 PCIe 加载）。下一阶段 GPU LRU 缓存目标 **40+ t/s**，热 expert 留在显存不搬。
 
-```bash
-pip install moe-l2
-moe-l2 start --model model.gguf --l2-size 4GB
-```
-
-代理启动在 `localhost:11435` — 你的所有现有工具（curl、Open WebUI、LangChain）无需任何修改即可使用。
-
-## 工作原理
-
-```
-你的客户端 → moe-l2 代理 (:11435) → ollama/llama.cpp (:11434)
-               ├── 领域预测器（关键词 + 可选语义）
-               ├── L2 缓存（LRU、mmap /dev/shm/、异步预加载）
-               └── 透明转发（SSE 流式）
-```
-
-1. 用户发送 prompt
-2. 领域预测器进行分类（代码生成、数学、中文技术……）
-3. L2 缓存将预测的 expert 预加载到共享内存
-4. 请求转发到后端 — expert 已在缓存中
-5. 同一会话中缓存命中率通常超过 85%
+---
 
 ## 系统架构
 
-moe-l2 使用四层分级调度模型，将 expert 存储与 GPU 内存解耦：
+```
+                         ┌─────────────────────────┐
+  你的 prompt ──────────▶│  moe-l2 代理 (:11435)    │
+                         │                          │
+                         │  ┌─────────────────────┐ │
+                         │  │ 领域预测器           │ │
+                         │  │ (关键词 + 语义兜底)  │ │
+                         │  └────────┬────────────┘ │
+                         │           │ 预测领域       │
+                         │           ▼               │
+                         │  ┌─────────────────────┐ │
+                         │  │ L2 缓存 (RAM)       │ │
+                         │  │ LRU · mmap · 异步   │ │
+                         │  │ 从硬盘预加载         │ │
+                         │  └────────┬────────────┘ │
+                         │           │ 转发           │
+                         └───────────┼───────────────┘
+                                     ▼
+                         ┌─────────────────────────┐
+                         │  llama.cpp / ollama      │
+                         │  (:11434, CUDA GPU)      │
+                         │  只放活跃 expert          │
+                         └─────────────────────────┘
+```
+
+### 四级存储模型
 
 ```
-┌───────────────────────────────────────────────────┐
-│  L0 — CPU Router                                  │
-│  Gate network 路由 + 领域分类                      │
-├───────────────────────────────────────────────────┤
-│  L1 — GPU VRAM                                    │
-│  活跃推理：expert + KV cache                       │
-├───────────────────────────────────────────────────┤
-│  L2 — RAM 热缓存（本项目）                         │
-│  基于领域的 expert 预加载（LRU、mmap）              │
-├───────────────────────────────────────────────────┤
-│  L3 — SSD 冷存储                                  │
-│  完整 expert 权重，按需加载                         │
-└───────────────────────────────────────────────────┘
+L0 ─ CPU 路由器    门控路由 + 领域分类（你的 CPU）
+ ↑
+L1 ─ GPU 显存      活跃推理 — expert + KV cache（你的显卡）
+ ↑
+L2 ─ RAM 热缓存    基于领域的 LRU 缓存，mmap 共享内存（本项目的核心）
+ ↑
+L3 ─ SSD 冷存储    完整 expert 权重，按需从硬盘加载
 ```
 
-每层就是一个存储层。离 GPU 越近越快但空间越小，越远越慢但越便宜。调度器把活跃数据留在高速层，其余推到下层。
+越靠近 GPU 越快但空间越小，越远越慢但越便宜。调度器把活跃数据留在高速层，其余推到下层。
 
-## 功能特性
+---
 
-- **零配置** — 装完就能用，指定模型完事
-- **透明代理** — 客户端无需改配置，兼容任何 OpenAI 工具
-- **双模式预测** — 关键词模式（零额外依赖）或关键词 + 语义嵌入混合模式
-- **LRU 淘汰** — 缓存大小可配置（`--l2-size 512MB` 到 `16GB`）
-- **GPU 模式** — A3 补丁版 llama-server 支持 expert 卸载，RTX 4090 已验证
-- **库 API** — `from moe_l2 import predict, L2Cache` 供嵌入式使用
+## 适用场景
+
+### ✅ 适合
+- **单人聊天** — 用 4-12 GB 显卡跑大 MoE 模型
+- **测试和实验** — 在预算硬件上玩 MoE 架构
+- **家庭实验室 / 边缘部署** — 每一 GB 显存都珍贵
+- **研究 expert 缓存**、分层调度、领域感知预加载
+
+### ❌ 不适合
+- 高并发 API 服务（频繁换 expert 产生 I/O 瓶颈）
+- 对延迟敏感的应用（SSD 缓存缺失导致速度波动）
+- 机械硬盘作存储 — **需要 NVMe 固态**
+
+---
+
+## 快速开始
+
+### 1. 安装
+
+```bash
+pip install moe-l2
+```
+
+### 2. 下载 GPU 二进制（仅 `--gpu` 模式需要）
+
+```bash
+moe-l2 download-bins
+```
+从 GitHub Release 拉取预编译的 CUDA llama-server（约 530 MB）。
+
+### 3. 启动
+
+**CPU 模式**（仅 expert 缓存，不省显存）：
+```bash
+moe-l2 start --model /path/to/model.gguf --l2-size 4GB
+```
+
+**GPU 模式**（A3 补丁版 llama-server，省 91% 显存）：
+```bash
+moe-l2 start --model /path/to/model.gguf --l2-size 4GB --gpu
+```
+
+代理启动在 `localhost:11435`，直接当普通 OpenAI/Ollama 用就行。
+
+### 4. 看统计
+
+```bash
+moe-l2 stats
+# → 命中率: 85% · 槽位: 320/960 · 当前领域: codegen
+```
+
+---
 
 ## CLI 参考
 
@@ -110,7 +158,28 @@ moe-l2 使用四层分级调度模型，将 expert 存储与 GPU 内存解耦：
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：仓库不追踪 500MB+ 的 .so 文件。预编译二进制通过 GitHub Release 分发。运行 `moe-l2 download-bins` 即可获取。
+> **GPU 二进制**：不在 git 中追踪（~530 MB），运行时通过 `moe-l2 download-bins` 获取。
+
+---
+
+## 工作原理（简版）
+
+1. 你的 prompt 到达 moe-l2 代理
+2. 领域预测器分类（代码生成 → 数学 → 中文技术 ……）
+3. L2 缓存从 SSD 预加载预测的 expert 到共享内存（`/dev/shm/`）
+4. 请求转发到 llama.cpp/ollama — 热 expert 从 RAM 加载（~1150 µs）而非冷 SSD（~6500 µs）
+5. 同一会话缓存命中率超过 85%
+
+---
+
+## 平台要求
+
+- **仅 Linux x86_64** — 预编译二进制目标为 Linux AMD64（CUDA `.so` + `llama-server`）
+- macOS、Windows、ARM Linux **暂不支持**
+- **强烈建议使用 NVMe 固态硬盘**
+- `--gpu` 模式需要 NVIDIA 显卡（下一阶段支持 GPU LRU expert 缓存）
+
+---
 
 ## 更多数据
 
@@ -121,36 +190,38 @@ moe-l2 使用四层分级调度模型，将 expert 存储与 GPU 内存解耦：
 | 显存占用 | 23.3 GB | 2.2 GB |
 | 模型大小 / 显存比 | 0.26× | **2.7×** |
 
-速度取舍是可以预期的：expert 通过 PCIe 从系统内存加载。这是有意为之的设计选择，适合优先考虑内存效率而非峰值吞吐的场景 — 家庭实验室、边缘部署、预算有限的硬件。
+速度取舍是可预期的：expert 通过 PCIe 从系统内存加载。这是有意为之的设计，适合优先考虑内存效率而非峰值吞吐的场景。
 
-> **注：** 8.6 t/s 是当前 Phase 2 的实测值（expert 在 CPU 侧，每步通过 PCIe 加载）。下一阶段优化 — GPU LRU expert 缓存 — 将热 expert 保留在显存中，目标 **40+ t/s**，消除缓存命中时的 PCIe 瓶颈。
+---
 
 ## 相关工作
 
-[TencentYoutuResearch/Palm-Infra](https://github.com/TencentYoutuResearch/Palm-Infra) / **mollm** 是腾讯的 C++ 推理引擎，在 Apple Silicon / ARM Linux 上通过 SSD expert 卸载运行 MoE 模型 — 122B MoE 模型配合 16 GB 峰值 RSS 达到 16.22 t/s。
+[TencentYoutuResearch/Palm-Infra](https://github.com/TencentYoutuResearch/Palm-Infra) / **mollm** 是腾讯的 C++ 推理引擎，在 Apple Silicon / ARM Linux 上通过 SSD expert 卸载运行 MoE 模型（122B MoE + 16 GB 峰值 RSS，16.22 t/s）。
 
-moe-l2 和 mollm 核心思路相同（expert 缓存 + 分层存储），但面向不同用户：
+两者核心思路相同（expert 缓存 + 分层存储），但面向不同用户：
 
 | 维度 | mollm（腾讯） | moe-l2 |
 |------|-------------|--------|
 | 平台 | Apple Silicon / ARM Linux | **Linux x86_64 + GPU（NVIDIA）** |
 | 安装 | 源码编译（CMake + C++） | **pip install moe-l2** |
-| 模型兼容性 | 仅 Qwen 系列 | **任何 llama.cpp 支持的 MoE**（DeepSeek、Qwen、Mixtral……） |
-| 后端 | 自研 C++ 引擎 | **llama.cpp 代理** — 零迁移成本 |
+| 模型兼容性 | 仅 Qwen 系列 | **任何 llama.cpp 支持的 MoE** |
+| 后端 | 自研 C++ 引擎 | **llama.cpp 代理 — 零迁移** |
 | GPU 加速 | 仅 CPU（NEON） | **CUDA + GPU 显存** |
 | 目标用户 | 移动 / 边缘设备开发者 | **桌面家庭用户** |
 
-对于已经在用 llama.cpp 的桌面用户，moe-l2 一行命令即可添加 expert 缓存，无需更换引擎。
+---
 
 ## 项目状态
 
 - ✅ 领域预测器（关键词 + 可选语义）
 - ✅ L2 缓存（mmap LRU、线程安全、异步预加载）
 - ✅ 透明代理（HTTP/SSE 转发）
-- ✅ CLI（start/stats 带自动模型检测、--gpu 模式）
-- ✅ GPU 模式已验证（RTX 4090，DS-V2-Lite，~1.6 GiB 显存）
-- ✅ PyPI 包（moe-l2）
-- 🔲 GPU LRU expert 缓存（热 expert 留在显存，减少 PCIe 传输）— 下一阶段
+- ✅ CLI（start/stats，自动模型检测，GPU 模式）
+- ✅ GPU 模式已验证（RTX 4090，DS-V2-Lite，~1.6 GiB 显存，95% 节省）
+- ✅ PyPI 包（`moe-l2`）
+- 🔲 GPU LRU expert 缓存（热 expert 留在显存，8.6 → 40+ t/s）
+
+---
 
 ## 许可证
 
