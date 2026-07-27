@@ -305,7 +305,7 @@ def cmd_start(args):
         # Compute slots from expert size directly
         from .gguf_reader import MoEGGUFReader
         reader = MoEGGUFReader(model_path)
-        expert_size = reader.per_expert_size
+        expert_size = reader.per_expert_size()
         slots = _parse_l2_size(l2_size_str, expert_size)
         print(f"  expert:   {expert_size // (1024*1024)} MB each")
         print(f"  L2 size:  {l2_size_str} total → {slots} slots/layer")
