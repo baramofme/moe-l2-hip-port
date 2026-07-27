@@ -1,6 +1,19 @@
 # moe-l2
 
-**Run large MoE models on consumer GPUs.** A transparent expert-caching proxy that lets you run 16GB+ models on 8GB (or even 4GB) GPUs — saving up to 91% VRAM.
+**Got an 8GB GPU? You can now run 32B MoE models.**  
+moe-l2 slashes VRAM by up to 91% — only active experts live on your GPU, the rest stay on CPU.
+
+| Your GPU | Normally fits | **With moe-l2** |
+|----------|--------------|-----------------|
+| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ |
+| 8 GB | 7B dense | Qwen2.5-32B-A3B (32B MoE) ✅ |
+| 12 GB | 13B dense | DeepSeek-V2 (236B MoE) ✅ |
+| 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ✅ |
+
+```bash
+pip install moe-l2
+moe-l2 start --model model.gguf --l2-size 4GB
+```
 
 ## Why
 
