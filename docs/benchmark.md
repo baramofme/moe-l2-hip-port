@@ -58,6 +58,20 @@ Simulated 19200 expert accesses across 5 domains with per-layer LRU caches.
 4. **Domain pin is most valuable at small cache** (16-32 slots) — irrelevant at 64+
 5. **Bandwidth savings**: 96 slots → ~3.0 GB saved vs no cache (19.4 GB)
 
+Raw data: 48 log files across 8 domains × 3 phases (short/followup/longtail), 224,000+ lines.
+
+### Test data
+
+The full benchmark reports and experimental data are in the repo:
+
+| Document | Contents |
+|----------|----------|
+| [`docs/expert-clustering-report.md`](docs/expert-clustering-report.md) | Domain-expert affinity verification (DS-V2-Lite & Qwen3.6) |
+| [`docs/gpu-benchmark-dsv2lite.md`](docs/gpu-benchmark-dsv2lite.md) | DS-V2-Lite GPU benchmark: 8 domains × 3 phases, VRAM & speed |
+| [`docs/gpu-benchmark-qwen36.md`](docs/gpu-benchmark-qwen36.md) | Qwen3.6-35B-A3B GPU benchmark: short/followup/longtail per domain |
+| [`docs/gpu-benchmark-intermediate.md`](docs/gpu-benchmark-intermediate.md) | Intermediate GPU results during development |
+| [`docs/d2h-swap-conclusion.md`](docs/d2h-swap-conclusion.md) | Runtime D2H swap experiment — why it can't save VRAM |
+
 ## Reproducing
 
 ```bash
