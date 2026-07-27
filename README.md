@@ -20,6 +20,10 @@ Tested on **DeepSeek-V2-Lite** (16B params, 64 experts, top-6) in Q2_K quantizat
 
 With a 24 GB GPU you'd normally need for this model, moe-l2 brings it down to **2.2 GB** — leaving 22 GB free for other workloads, or making the model runnable on an 8 GB / 4 GB card.
 
+## Platform requirements
+
+**Linux x86_64 only.** The pre-built GPU binaries (CUDA `.so` files and `llama-server`) are compiled for Linux AMD64. macOS, Windows, and ARM Linux are not supported at this time.
+
 ## Quick start
 
 ```bash
