@@ -68,7 +68,9 @@ The full benchmark reports and experimental data are in the repo:
 |----------|----------|
 | [`docs/expert-clustering-report.md`](docs/expert-clustering-report.md) | Domain-expert affinity verification (DS-V2-Lite & Qwen3.6) |
 | [`docs/gpu-benchmark-dsv2lite.md`](docs/gpu-benchmark-dsv2lite.md) | DS-V2-Lite GPU benchmark: 8 domains × 3 phases, VRAM & speed |
+| [`docs/gpu-benchmark-dsv2lite-lru-cache.md`](docs/gpu-benchmark-dsv2lite-lru-cache.md) | DS-V2-Lite LRU Expert Cache: baseline comparison across 4 cache fractions |
 | [`docs/gpu-benchmark-qwen36.md`](docs/gpu-benchmark-qwen36.md) | Qwen3.6-35B-A3B GPU benchmark: short/followup/longtail per domain |
+| [`docs/gpu-benchmark-qwen36-lru-cache.md`](docs/gpu-benchmark-qwen36-lru-cache.md) | Qwen3.6-35B-A3B LRU Expert Cache: baseline comparison across 4 cache fractions |
 | [`docs/gpu-benchmark-intermediate.md`](docs/gpu-benchmark-intermediate.md) | Intermediate GPU results during development |
 | [`docs/d2h-swap-conclusion.md`](docs/d2h-swap-conclusion.md) | Runtime D2H swap experiment — why it can't save VRAM |
 
