@@ -1,13 +1,5 @@
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL EXPERIMENT SCRIPT                          ║
-# ║  This is an internal research script.                ║
-# ║  Paths (model files, SSH hosts, llama.cpp binary)    ║
-# ║  are hardcoded to the author's environment.          ║
-# ║  You MUST edit paths before running it.              ║
-# ╚══════════════════════════════════════════════════════╝
-#
-import pexpect, time, os
-pw = os.environ['AUTODL_PASSWORD']
+import pexpect, time
+pw = 'VhcV9y0QIyE+'
 
 # Connect via SSH and run the whole thing
 c = pexpect.spawn('/usr/bin/ssh', ['-oStrictHostKeyChecking=no', '-p39657', 'root@connect.bjb1.seetacloud.com'],

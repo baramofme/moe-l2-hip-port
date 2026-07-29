@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL EXPERIMENT SCRIPT                          ║
-# ║  LRU cache trace simulator — pure local, no deps.   ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """
 LRU GPU expert cache trace simulator — Phase 1.5 of moe-l2.
 

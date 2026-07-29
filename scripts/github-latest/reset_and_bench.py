@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL DEPLOY SCRIPT                              ║
-# ║  Requires SSH access to AutoDL GPU instance.         ║
-# ║  HOST/PORT/USER are hardcoded. Use:                  ║
-# ║    python3 reset_and_bench.py <password>              ║
-# ║  Edit HOST/PORT/USER before use.                     ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """One-shot: reset GPU, run benchmark, report results."""
 import pexpect, sys, base64, time
 

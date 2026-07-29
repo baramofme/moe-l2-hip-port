@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL EXPERIMENT SCRIPT                          ║
-# ║  This is a one-off benchmark script with paths       ║
-# ║  hardcoded to the author's environment.              ║
-# ║  Edit MODEL, BIN before use.                         ║
-# ╚══════════════════════════════════════════════════════╝
-#
+
 MODEL=/root/autodl-tmp/DeepSeek-V2-Lite-Chat-Uncensored.Q2_K.gguf
 BIN=/root/llama.cpp/build/bin/llama-cli
 ARGS="-m $MODEL -p 'Hello' -n 50 --cpu-moe -ngl 99 -c 512 --single-turn"

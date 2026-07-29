@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL DEPLOY SCRIPT                              ║
-# ║  Requires SSH access to AutoDL GPU instance.         ║
-# ║  HOST/PORT/USER are hardcoded. Edit before use.      ║
-# ║  Also edits local file path (/opt/data/reset_gpu.py). ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """SCP upload using paramiko-style approach, but with shell pipe.
 Encode file as base64, SSH in, decode on remote side."""
 import pexpect, sys, base64

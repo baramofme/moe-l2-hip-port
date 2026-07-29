@@ -1,11 +1,4 @@
 #!/tmp/ssh_venv/bin/python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL DEPLOY SCRIPT                              ║
-# ║  Requires SSH key access to AutoDL GPU instance.     ║
-# ║  HOST/PORT/USER/KEY are hardcoded in main().         ║
-# ║  Edit KEY path and HOST/PORT/USER before use.        ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """Upload run_bench_v4.sh to cloud server via SSH (key auth) and execute it."""
 
 import pexpect

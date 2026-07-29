@@ -1,11 +1,4 @@
 #!/tmp/ssh_venv/bin/python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL EXPERIMENT SCRIPT                          ║
-# ║  Monitor benchmark progress on cloud GPU server.     ║
-# ║  HOST/PORT/KEY are hardcoded to the author's setup.  ║
-# ║  Edit HOST, PORT, KEY before use.                   ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """Monitor benchmark progress on cloud server."""
 import pexpect
 import time

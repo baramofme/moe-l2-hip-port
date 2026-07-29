@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL PATCH SCRIPT                               ║
-# ║  Targets a specific llama.cpp fork + commit.         ║
-# ║  `/root/llama.cpp/...` path is hardcoded.            ║
-# ║  Adjust path and verify code context before use.    ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """Clean up duplicate A3 cache blocks in ggml-cuda.cu."""
 path = '/root/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu'
 

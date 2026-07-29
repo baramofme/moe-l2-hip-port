@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL PATCH SCRIPT                               ║
-# ║  Targets a specific llama.cpp fork + commit.         ║
-# ║  `/root/llama.cpp/...` path is hardcoded.            ║
-# ║  Adjust path and verify code context before use.    ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """Apply permanent fix: skip cache_set for tensors > 100 MB.
 
 Two locations in ggml-cuda.cu:

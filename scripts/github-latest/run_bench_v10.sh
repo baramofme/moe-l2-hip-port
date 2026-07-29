@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL EXPERIMENT SCRIPT                          ║
-# ║  Paths (model files, llama.cpp binary) are           ║
-# ║  hardcoded to the author's environment.              ║
-# ║  Edit MODEL_*, LLAMA_CLI, RESULTS_FILE before use.   ║
-# ╚══════════════════════════════════════════════════════╝
-#
 # MoE LRU Cache Benchmark v10 — after cache_set size threshold fix
 # Tests Qwen3.6 IQ2_M + DS-V2-Lite Q2_K, all cache levels
 

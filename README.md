@@ -37,12 +37,12 @@ Tested on **DeepSeek-V2-Lite** (16B, 64 experts, top-6, Q2_K):
 | Mode | GPU VRAM | Speed | What it means |
 |------|----------|-------|---------------|
 | Standard (all experts on GPU) | 23.3 GB | 65 t/s | Needs a 24 GB card |
-| **moe-l2** (hot-cached experts) | **2.2 GB** | **8.6 t/s** | **Fits in 4 GB cards** |
-| **Savings** | **91% less** | 13% speed | ~20 GB freed for other work |
+| **moe-l2** (hot-cached experts) | **2.7 GB** | **~7 t/s** gen · **103 t/s** prompt | **Fits in 4 GB cards** |
+| **Savings** | **88% less** | 11% speed | ~20 GB freed for other work |
 
-Without moe-l2, an 8 GB card **cannot load this model at all** — it OOMs immediately. With moe-l2, it uses 2.2 GB and leaves 5.8 GB for other tasks.
+Without moe-l2, an 8 GB card **cannot load this model at all** — it OOMs immediately. With moe-l2, it uses 2.7 GB (cache=0.5) and leaves 5.3 GB for other tasks.
 
-> 8.6 t/s is the current Phase 2 measurement (experts on CPU, loaded via PCIe every step). The GPU LRU cache (next phase) targets **40+ t/s** by keeping hot experts in VRAM.
+> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. GPU LRU expert cache (Phase 3) is now **stable** — 0 crashes across 7 cache levels × 3 conversation types. gen speed is CPU-bound (~5-7 t/s), but followup prompt processing gets 10× faster (~80-103 t/s) from cache hits. Full reports: [Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md)
 
 ---
 
@@ -186,11 +186,11 @@ Options:
 | Metric | Standard | With moe-l2 |
 |--------|----------|-------------|
 | Prompt processing | 110 t/s | 110 t/s |
-| Generation speed | 65 t/s | 8.6 t/s |
-| VRAM used | 23.3 GB | 2.2 GB |
-| Model size / VRAM ratio | 0.26× | **2.7×** |
+| Generation speed | 65 t/s | ~5-7 t/s |
+| VRAM used | 23.3 GB | 2.7 GB |
+| Model size / VRAM ratio | 0.26× | **2.2×** |
 
-The speed tradeoff is intentional: experts load from system RAM via PCIe. Perfect for users who prioritize memory efficiency over peak throughput — home labs, edge deployments, budget hardware.
+The speed tradeoff is intentional: experts load from system RAM via PCIe. Phase 3 GPU LRU cache is stable — gen speed is CPU-bound (~5-7 t/s), but followup prompt processing reaches ~80-103 t/s from cache hits.
 
 ---
 
@@ -217,7 +217,7 @@ The speed tradeoff is intentional: experts load from system RAM via PCIe. Perfec
 - ✅ CLI with auto model detection and GPU mode
 - ✅ GPU mode verified on RTX 4090 (DS-V2-Lite, ~1.6 GiB VRAM, 95% savings)
 - ✅ PyPI package (`moe-l2`)
-- 🔲 GPU LRU expert cache (keep hot experts in VRAM, 8.6 → 40+ t/s)
+- ✅ GPU LRU expert cache (verified: Qwen3.6 + DS-V2-Lite, 7 levels × 3 types, 0 crashes)
 
 ---
 

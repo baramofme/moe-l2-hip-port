@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL DEPLOY SCRIPT                              ║
-# ║  Requires SSH access to AutoDL GPU instance.         ║
-# ║  HOST/PORT/USER are hardcoded. Use:                  ║
-# ║    python3 reset_gpu_v2.py <password>                 ║
-# ║  Edit HOST/PORT/USER before use.                     ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """Reset GPU via cudaDeviceReset on remote server and check VRAM."""
 import pexpect, sys, base64
 

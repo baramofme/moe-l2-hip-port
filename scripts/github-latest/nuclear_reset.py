@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-# ╔══════════════════════════════════════════════════════╗
-# ║  INTERNAL DEPLOY SCRIPT                              ║
-# ║  Requires SSH access to AutoDL GPU instance.         ║
-# ║  HOST/PORT/USER are hardcoded. Use:                  ║
-# ║    python3 nuclear_reset.py <password>                ║
-# ║  Edit HOST/PORT/USER before use.                     ║
-# ╚══════════════════════════════════════════════════════╝
-#
 """Nuclear option: unload/reload nvidia modules to force GPU memory cleanup."""
 import pexpect, sys
 
