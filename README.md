@@ -176,6 +176,27 @@ Options:
 
 The speed tradeoff is intentional: experts load from system RAM via PCIe. Phase 3 GPU LRU cache is stable — gen speed is CPU-bound (~5-7 t/s), but followup prompt processing reaches ~80-103 t/s from cache hits.
 
+## A3 Expert Cache (llama.cpp)
+
+Beyond the proxy layer, moe-l2 ships an **A3 (Attention-Aware Expert Cache)** patch for llama.cpp that compiles expert LRU caching directly into the CUDA backend — no proxy needed. Run any llama.cpp binary with `--cpu-moe --expert-cache <fraction>`.
+
+```
+./llama-batched -m DeepSeek-V2-Lite.Q2_K.gguf \
+  -p "prompt" -n 128 -ngl 99 \
+  --cpu-moe --expert-cache 0.25
+```
+
+**Real benchmark (RTX 4090 · DeepSeek-V2-Lite Q2_K 6.4 GB):**
+
+| Mode | VRAM used | Speed | Savings |
+|------|-----------|-------|---------|
+| OG (---no-mmap, full GPU) | **6,635 MB** | 126.64 t/s | baseline |
+| A3 (--expert-cache 0.25) | **1,175 MB** | 8.22 t/s | **5,460 MB (5.64×)** |
+
+A3 caches 25% of the most-recently-used experts on GPU and swaps inactive ones in from CPU RAM on demand. Good for single-user chat: acceptable latency (~7-8 t/s gen) with >80% VRAM savings. For batch / high-throughput scenarios, increase the cache fraction or omit `--cpu-moe`.
+
+> Run the demo yourself: `bash examples/demo_a3_compression.sh` (edit paths first).
+
 ## Related work
 
 [TencentYoutuResearch/Palm-Infra](https://github.com/TencentYoutuResearch/Palm-Infra) / **mollm** is a C++ engine from Tencent for MoE models with SSD expert offload on Apple Silicon / ARM Linux (16.22 t/s, 122B MoE, 16 GB peak RSS).
