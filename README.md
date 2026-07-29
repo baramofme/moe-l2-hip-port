@@ -1,11 +1,29 @@
 # moe-l2
 
-[**中文**](README_zh.md) | English
+**Run large MoE models on consumer GPUs.** A transparent proxy that predicts which experts your prompt needs, preloads them into a shared-memory LRU cache, so you can run 16 GB+ models on 8 GB GPUs.
 
-[![PyPI version](https://img.shields.io/pypi/v/moe-l2)](https://pypi.org/project/moe-l2/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
+## Quick start
 
-**Got an 8 GB GPU? Run 32B MoE models — 91% less VRAM, one pip install.**
+```bash
+pip install moe-l2                   # keyword-only predictor (zero extra deps)
+pip install moe-l2[predictor]        # hybrid: keyword + semantic embedding
+moe-l2 start --model model.gguf --l2-size 4GB
+```
+
+Your tools (curl, Open WebUI, LangChain) connect to `localhost:11435` — no client changes needed.
+
+## How it works
+
+MoE models have many "experts" but only activate a few per token. moe-l2 predicts your prompt's domain (codegen, math, chinese_tech, etc.) and preloads the relevant experts into an mmap'd LRU cache before they're needed.
+
+```
+user → moe-l2 proxy (localhost:11435)
+    ├── predict domain
+    ├── preload domain experts → /dev/shm/moe_l2/
+    └── forward to ollama (localhost:11434)
+```
+
+### Real-world benchmark
 
 | Your GPU | Normally fits | **With moe-l2** |
 |----------|--------------|-----------------|
@@ -14,25 +32,9 @@
 | 12 GB | 13B dense | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ✅ |
 
-```bash
-pip install moe-l2
-moe-l2 download-bins
-moe-l2 start --model model.gguf --l2-size 4GB
-```
+Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.7 GB VRAM (cache=0.5 on DS-V2-Lite).
 
-Your tools (curl, Open WebUI, LangChain) connect to `localhost:11435` — no client changes needed.
-
----
-
-## What moe-l2 does for you
-
-MoE (Mixture-of-Experts) models pack dozens to hundreds of "experts" but only use a few per token. Standard inference loads **every** expert into GPU VRAM — wasting 80-95% on idle weights.
-
-**moe-l2 keeps only the active experts on your GPU. The rest stay in system RAM or SSD, swapped in on demand.**
-
-### Real-world benchmark
-
-Tested on **DeepSeek-V2-Lite** (16B, 64 experts, top-6, Q2_K):
+### Benchmarked on RTX 4090
 
 | Mode | GPU VRAM | Speed | What it means |
 |------|----------|-------|---------------|
@@ -40,107 +42,103 @@ Tested on **DeepSeek-V2-Lite** (16B, 64 experts, top-6, Q2_K):
 | **moe-l2** (hot-cached experts) | **2.7 GB** | **~7 t/s** gen · **103 t/s** prompt | **Fits in 4 GB cards** |
 | **Savings** | **88% less** | 11% speed | ~20 GB freed for other work |
 
-Without moe-l2, an 8 GB card **cannot load this model at all** — it OOMs immediately. With moe-l2, it uses 2.7 GB (cache=0.5) and leaves 5.3 GB for other tasks.
+> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. GPU LRU expert cache (Phase 3) is now **stable** — 0 crashes across 7 cache levels × 3 conversation types. Gen speed is CPU-bound (~5-7 t/s), but followup prompt processing gets 10× faster (~80-103 t/s) from cache hits. Full reports: [Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md)
 
-> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. GPU LRU expert cache (Phase 3) is now **stable** — 0 crashes across 7 cache levels × 3 conversation types. gen speed is CPU-bound (~5-7 t/s), but followup prompt processing gets 10× faster (~80-103 t/s) from cache hits. Full reports: [Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md)
+## Usage
 
----
+### 1. L2 proxy (recommended)
 
-## System architecture
-
-```
-                         ┌─────────────────────────┐
-  Your prompt ──────────▶│  moe-l2 Proxy (:11435)    │
-                         │                          │
-                         │  ┌─────────────────────┐ │
-                         │  │ Domain Predictor    │ │
-                         │  │ (keyword + semantic) │ │
-                         │  └────────┬────────────┘ │
-                         │           │ predicted     │
-                         │           ▼ domain        │
-                         │  ┌─────────────────────┐ │
-                         │  │ L2 Cache (RAM)      │ │
-                         │  │ LRU · mmap · async  │ │
-                         │  │ preload from SSD    │ │
-                         │  └────────┬────────────┘ │
-                         │           │ forward       │
-                         └───────────┼───────────────┘
-                                     ▼
-                         ┌─────────────────────────┐
-                         │  llama.cpp / ollama      │
-                         │  (:11434, CUDA GPU)      │
-                         │  Active experts only     │
-                         └─────────────────────────┘
-```
-
-### The 4-tier storage model
-
-```
-L0 ─ CPU Router     Gate routing + domain classification (your CPU)
- ↑
-L1 ─ GPU VRAM       Active inference — experts + KV cache (your GPU)
- ↑
-L2 ─ RAM Hot Cache  Domain-Aware LRU cache, mmap shared memory (this project)
- ↑
-L3 ─ SSD Cold Store  Full expert weights, demand-loaded from disk
-```
-
-Close to GPU = fast but small; far from GPU = slow but cheap. The scheduler keeps active data in fast tiers and pushes everything else down.
-
----
-
-## When to use it
-
-### ✅ Great for
-- **Single-user local chat** with large MoE models on 4-12 GB GPUs
-- **Testing and experimenting** with MoE architectures on budget hardware
-- **Homelab / edge deployments** where every GB of VRAM counts
-- **Research on expert caching**, tiered scheduling, and domain-aware preloading
-
-### ❌ Not for
-- High-throughput API serving (frequent expert swaps create I/O bottlenecks)
-- Latency-sensitive real-time apps (SSD cache misses cause speed dips)
-- Mechanical hard drives as storage — **NVMe SSD required**
-
----
-
-## Quick start
-
-### 1. Install
+Start the transparent proxy — sits between your client and ollama:
 
 ```bash
-pip install moe-l2
+moe-l2 start --model /models/DeepSeek-V2-Lite.Q4_K_M.gguf --l2-size 4GB
 ```
 
-### 2. Download GPU binaries (optional, only for `--gpu` mode)
+All default ollama tools work through it (curl, open-webui, langchain):
 
 ```bash
-moe-l2 download-bins
+# streaming
+curl http://localhost:11435/api/chat -d '{
+  "model":"qwen3:4b",
+  "messages":[{"role":"user","content":"write a Python script"}],
+  "stream":true
+}'
+
+# blocking
+curl http://localhost:11435/api/chat -d '{
+  "model":"qwen3:4b",
+  "messages":[{"role":"user","content":"hello"}],
+  "stream":false
+}'
 ```
-This fetches the pre-built CUDA-enabled llama-server from GitHub Releases (~530 MB).
 
-### 3. Start
-
-**CPU mode** (expert cache only, no GPU savings):
-```bash
-moe-l2 start --model /path/to/model.gguf --l2-size 4GB
-```
-
-**GPU mode** (A3-patched llama-server, saves 91% VRAM):
-```bash
-moe-l2 start --model /path/to/model.gguf --l2-size 4GB --gpu
-```
-
-The proxy starts on `localhost:11435`. Send requests as if it were a regular OpenAI / Ollama endpoint.
-
-### 4. Check stats
+### 2. Monitor cache stats
 
 ```bash
-moe-l2 stats
-# → Hit rate: 85% · Slots used: 320/960 · Active domain: codegen
+moe-l2 stats --port 11435
 ```
 
----
+Example output:
+```
+moe-l2 cache stats
+  requests:     47
+  hits:         42     (89.4%)
+  misses:        5
+  slots_used:  32/48  (66.7%)
+  memory:     456 MB  (68.3% of 668 MB)
+```
+
+### 3. Use as a library
+
+```python
+from moe_l2 import predict, predict_hybrid, domain_to_expert_ids
+from moe_l2.cache import L2Cache
+
+# Predict domain (zero-dependency mode)
+domain = predict("print hello world")  # → "codegen"
+
+# Or use the hybrid semantic predictor
+domain = predict_hybrid("how do I sort a list?")  # → "codegen"
+
+# Preload experts
+cache = L2Cache(model_path="model.gguf", l2_size="4GB")
+cache.preload(domain_to_expert_ids[domain])
+```
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                       HTTP client                          │
+│     curl / open-webui / langchain / any OpenAI client      │
+└──────────┬─────────────────────────────────────────────────┘
+           │ POST /api/chat
+           ▼
+┌────────────────────────────────────────────────────────────┐
+│               moe-l2 Proxy (port 11435)                     │
+│                                                            │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Domain Predictor                                    │   │
+│  │  - Keyword mode: zero deps, instant classification   │   │
+│  │  - Hybrid mode: +sentence-transformers for context   │   │
+│  └─────────────────────┬───────────────────────────────┘   │
+│                        │ domain                             │
+│  ┌─────────────────────▼───────────────────────────────┐   │
+│  │  L2 Cache (mmap'd shared memory)                    │   │
+│  │  - LRU eviction policy                              │   │
+│  │  - Async preload: next-prediction prefetch          │   │
+│  │  - Thread-safe concurrent access                    │   │
+│  │  - Zero-copy mmap from SSD → RAM                    │   │
+│  └─────────────────────┬───────────────────────────────┘   │
+│                        │ forward request                    │
+└────────────────────────┼───────────────────────────────────┘
+                         ▼
+┌────────────────────────────────────────────────────────────┐
+│                ollama / llama.cpp (port 11434)              │
+│                Hot experts in GPU VRAM                      │
+│                Cold experts loaded from RAM/SSD via mmap    │
+└────────────────────────────────────────────────────────────┘
+```
 
 ## CLI reference
 
@@ -149,7 +147,7 @@ moe-l2 stats
 | `moe-l2 start --model <path> --l2-size <size>` | Start proxy + cache |
 | `moe-l2 start --model <path> --gpu` | Start with GPU-accelerated llama-server |
 | `moe-l2 stats --port <port>` | Show live cache stats |
-| `moe-l2 download-bins [--release TAG]` | Download pre-built GPU binaries |
+| `moe-l2 download-bins [--release TAG]` | Download pre-built GPU binaries from GitHub |
 | `moe-l2 stop --port <port>` | Stop proxy |
 
 Options:
@@ -158,28 +156,14 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU)
 
-> **GPU binaries**: Not tracked in git (~530 MB). Fetched at runtime via `moe-l2 download-bins`.
-
----
-
-## How it works (brief)
-
-1. Your prompt hits the moe-l2 proxy
-2. The domain predictor classifies it (codegen → math → chinese_tech ...)
-3. L2 cache preloads predicted experts from SSD into shared memory (`/dev/shm/`)
-4. Request is forwarded to llama.cpp/ollama — hot experts load from RAM (~1150 µs) instead of cold SSD (~6500 µs)
-5. Cache hit rate typically exceeds 85% within the same session
-
----
+> **GPU binaries**: Not tracked in git (~530 MB). Fetched at runtime via `moe-l2 download-bins`. The repo does not track 500MB+ .so files. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 
 - **Linux x86_64 only** — pre-built binaries target Linux AMD64 (CUDA `.so` + `llama-server`)
 - macOS, Windows, and ARM Linux are **not supported**
 - **NVMe SSD strongly recommended**
-- NVIDIA GPU required for `--gpu` mode (GPU LRU expert cache coming next)
-
----
+- NVIDIA GPU required for `--gpu` mode
 
 ## More data
 
@@ -191,8 +175,6 @@ Options:
 | Model size / VRAM ratio | 0.26× | **2.2×** |
 
 The speed tradeoff is intentional: experts load from system RAM via PCIe. Phase 3 GPU LRU cache is stable — gen speed is CPU-bound (~5-7 t/s), but followup prompt processing reaches ~80-103 t/s from cache hits.
-
----
 
 ## Related work
 
@@ -207,8 +189,6 @@ The speed tradeoff is intentional: experts load from system RAM via PCIe. Phase 
 | GPU acceleration | CPU only (NEON) | **CUDA + GPU VRAM** |
 | Target user | Mobile / edge developers | **Desktop homelab users** |
 
----
-
 ## Project status
 
 - ✅ Domain predictor (keyword + optional semantic)
@@ -216,8 +196,8 @@ The speed tradeoff is intentional: experts load from system RAM via PCIe. Phase 
 - ✅ Transparent proxy (HTTP/SSE forwarding)
 - ✅ CLI with auto model detection and GPU mode
 - ✅ GPU mode verified on RTX 4090 (DS-V2-Lite, ~1.6 GiB VRAM, 95% savings)
-- ✅ PyPI package (`moe-l2`)
 - ✅ GPU LRU expert cache (verified: Qwen3.6 + DS-V2-Lite, 7 levels × 3 types, 0 crashes)
+- ✅ PyPI package (`moe-l2`)
 
 ---
 
