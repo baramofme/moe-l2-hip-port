@@ -150,6 +150,7 @@ moe-l2 stats
 | `moe-l2 start --model <路径> --gpu` | 使用 GPU 加速的 llama-server 启动 |
 | `moe-l2 stats --port <端口>` | 查看实时缓存统计 |
 | `moe-l2 download-bins [--release TAG]` | 从 GitHub 下载预编译 GPU 二进制 |
+| `moe-l2 collect --model <路径>` | 采集 MoE 路由数据 → `~/.moe-l2/maps/domain_expert_map.json` |
 | `moe-l2 stop --port <端口>` | 停止代理 |
 
 可选参数：
@@ -216,10 +217,11 @@ moe-l2 stats
 - ✅ 领域预测器（关键词 + 可选语义）
 - ✅ L2 缓存（mmap LRU、线程安全、异步预加载）
 - ✅ 透明代理（HTTP/SSE 转发）
-- ✅ CLI（start/stats，自动模型检测，GPU 模式）
+- ✅ CLI（start/stats/collect，自动模型检测，GPU 模式）
 - ✅ GPU 模式已验证（RTX 4090，DS-V2-Lite，~1.6 GiB 显存，95% 节省）
 - ✅ PyPI 包（`moe-l2`）
 - ✅ GPU LRU expert 缓存（已验证 Qwen3.6 + DS-V2-Lite，7 级别 × 3 类型，0 崩溃）
+- ✅ 专家缓存适用边界已实测确认（Mixtral 8x7B / RTX 4090）：`--no-mmap` 下专家本就全量驻留 GPU，缓存是多余层且会拖慢（3.7 → 3.4 t/s）；仅在 mmap（专家在 CPU RAM）形态下缓存才有意义。CLI 已默认 mmap 配置
 
 ---
 

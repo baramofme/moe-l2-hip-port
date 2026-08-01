@@ -120,8 +120,8 @@ def _download_bins(tag: str) -> bool:
 def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
     """Launch bundled llama-server with GPU support (A3 patch enabled).
 
-    Sets LD_LIBRARY_PATH to the bundled .so files and
-    GGML_CUDA_FORCE_CPU_EXPERTS=1 for the tiered expert scheduling.
+    Sets LD_LIBRARY_PATH to the bundled .so files.
+    Uses mmap default so expert tensors stay in CPU RAM.
     """
     if not _LLAMA_SERVER_PATH.exists():
         raise FileNotFoundError(
@@ -134,8 +134,7 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
     env["LD_LIBRARY_PATH"] = (
         f"{_BUNDLE_DIR}:" + env.get("LD_LIBRARY_PATH", "")
     )
-    # A3 magic: force inactive expert tensors to CPU (tiered scheduling)
-    env["GGML_CUDA_FORCE_CPU_EXPERTS"] = "1"
+    # mmap default: expert tensors stay in CPU RAM, GPU cuBLAS computes them on demand
 
     cmd = [
         str(_LLAMA_SERVER_PATH),
@@ -143,9 +142,8 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
         "--port", str(port),
         "--model", model_path,
         # Reasonable defaults for consumer GPUs
-        "-ngl", "99",       # offload all layers to GPU
-        "-c", "8192",       # 8K context
-        "--no-mmap",        # don't mmap (A3 uses its own memory management)
+        "-ngl", "99",       # offload non-expert layers to GPU
+        "-c", "8192",       # 8K context — mmap default leaves expert in CPU RAM
     ]
 
     logger.info("Launching llama-server (A3 GPU): %s", " ".join(cmd))
@@ -242,6 +240,18 @@ def main():
         help=f"GitHub Release tag (default: {_DEFAULT_BINS_TAG})",
     )
 
+    # moe-l2 collect
+    collect_parser = subparsers.add_parser(
+        "collect", help="Collect MoE routing data → domain_expert_map.json (模式 A)"
+    )
+    collect_parser.add_argument("--model", required=True, help="Path to GGUF model file")
+    collect_parser.add_argument("--llama-cli", default=None, help="Path to llama-cli (supports LLAMA_EXPERT_LOG)")
+    collect_parser.add_argument("--output", default=None, help="Output maps dir (default: ~/.moe-l2/maps)")
+    collect_parser.add_argument("--domains", nargs="+", default=None, help="Domains to collect (default: all 8)")
+    collect_parser.add_argument("--stages", type=int, default=3, help="Prompts per domain (default: 3)")
+    collect_parser.add_argument("--tokens", type=int, default=20, help="Gen tokens per prompt (default: 20)")
+    collect_parser.add_argument("--timeout", type=int, default=300, help="Per-prompt timeout (default: 300)")
+
     # moe-l2 version
     subparsers.add_parser(
         "version", help="Show version (alternative to --version)"
@@ -263,6 +273,9 @@ def main():
         return cmd_stats(args)
     elif args.command == "download-bins":
         return cmd_download_bins(args)
+    elif args.command == "collect":
+        from .collect import cmd_collect
+        return cmd_collect(args)
     elif args.command == "version":
         print(f"moe-l2 {__version__}")
         return 0

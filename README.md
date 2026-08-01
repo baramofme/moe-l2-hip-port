@@ -148,6 +148,7 @@ cache.preload(domain_to_expert_ids[domain])
 | `moe-l2 start --model <path> --gpu` | Start with GPU-accelerated llama-server |
 | `moe-l2 stats --port <port>` | Show live cache stats |
 | `moe-l2 download-bins [--release TAG]` | Download pre-built GPU binaries from GitHub |
+| `moe-l2 collect --model <path>` | Collect MoE routing data → `~/.moe-l2/maps/domain_expert_map.json` |
 | `moe-l2 stop --port <port>` | Stop proxy |
 
 Options:
@@ -195,6 +196,23 @@ Beyond the proxy layer, moe-l2 ships an **A3 (Attention-Aware Expert Cache)** pa
 
 A3 caches 25% of the most-recently-used experts on GPU and swaps inactive ones in from CPU RAM on demand. Good for single-user chat: acceptable latency (~7-8 t/s gen) with >80% VRAM savings. For batch / high-throughput scenarios, increase the cache fraction or omit `--cpu-moe`.
 
+### When the cache helps (and when it doesn't)
+
+The expert cache only pays off when experts actually live in **CPU RAM** (default `mmap` mode). Verified on RTX 4090 with Mixtral 8x7B:
+
+| Mode | Expert location | Gen speed | Cache value |
+|------|----------------|-----------|-------------|
+| `--no-mmap` (all weights on GPU) | GPU VRAM | **3.7 t/s** | ❌ cache is a no-op layer |
+| `--no-mmap` + cache | GPU VRAM | 3.4-3.5 t/s | ❌ slower (cache forces the generic expert path, ~3 ms/token fixed overhead regardless of hit rate) |
+| default `mmap` + cache | CPU RAM | ~1 t/s (scheduler copy bound) | ⚠️ not recommended |
+| default `mmap` (no cache) | CPU RAM | 0.9 t/s | baseline |
+
+Key findings (2026-08-01, per-segment CUDA timing):
+
+- With `--no-mmap`, experts are **already fully resident in GPU VRAM** (copies are device-to-device, 100% on-GPU) — the cache adds nothing but an extra layer.
+- Turning the cache on forces the generic `MUL_MAT_ID` pipeline (host-side id sorting + two stream syncs ≈ 3.1 ms/token) **independent of hit rate** — hit rate 27% vs 49% both showed identical ~3.1 ms. The fast expert path only runs with the cache **off**.
+- Conclusion: use the cache only when experts are CPU-hosted (mmap). The bundled CLI defaults to this configuration (`mmap` default, no `--no-mmap` flag).
+
 > Run the demo yourself: `bash examples/demo_a3_compression.sh` (edit paths first).
 
 ## Related work
@@ -215,9 +233,10 @@ A3 caches 25% of the most-recently-used experts on GPU and swaps inactive ones i
 - ✅ Domain predictor (keyword + optional semantic)
 - ✅ L2 cache (mmap LRU, thread-safe, async preload)
 - ✅ Transparent proxy (HTTP/SSE forwarding)
-- ✅ CLI with auto model detection and GPU mode
+- ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
 - ✅ GPU mode verified on RTX 4090 (DS-V2-Lite, ~1.6 GiB VRAM, 95% savings)
 - ✅ GPU LRU expert cache (verified: Qwen3.6 + DS-V2-Lite, 7 levels × 3 types, 0 crashes)
+- ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090: under `--no-mmap` experts are already fully resident in VRAM, so the cache is a no-op layer that adds ~3 ms/token overhead (3.7 → 3.4 t/s); it only pays off when experts are CPU-hosted (mmap). CLI defaults to the mmap configuration.
 - ✅ PyPI package (`moe-l2`)
 
 ---

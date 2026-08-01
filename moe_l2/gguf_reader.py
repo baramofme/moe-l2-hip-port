@@ -151,16 +151,34 @@ class MoEGGUFReader:
             self._arch = "unknown"
         return self._arch
 
-    def per_expert_size(self, layer: int = 0) -> int:
+    def _first_expert_layer(self) -> int:
+        """Find the first layer index that has expert tensors.
+
+        Some models (e.g. DeepSeek-V2 with leading_dense_block_count > 0)
+        have dense initial layers without ``_exps`` tensors.
+        """
+        for name in self._tensors:
+            if "ffn_gate_exps" in name:
+                m = re.match(r"blk\.(\d+)\.", name)
+                if m:
+                    return int(m.group(1))
+        raise KeyError(
+            "No expert tensors found in this model "
+            "(no tensor matching 'blk.N.ffn_gate_exps.weight')"
+        )
+
+    def per_expert_size(self, layer: int | None = None) -> int:
         """Total raw bytes for one expert (gate+up+down combined).
 
         Args:
-            layer: Layer index to measure. Defaults to 0 since
-                   all layers have the same expert structure.
+            layer: Layer index to measure. Defaults to ``None``, which
+                   auto-discovers the first layer with expert tensors.
 
         Returns:
             Total bytes per expert for this model.
         """
+        if layer is None:
+            layer = self._first_expert_layer()
         total = 0
         for pattern in self.EXPERT_PATTERNS:
             t = self._get_tensor(layer, pattern)

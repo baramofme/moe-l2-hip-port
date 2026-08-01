@@ -14,7 +14,6 @@
 
 struct ExpertCacheSlot {
     const void * cpu_src;   // CPU base address (for key matching)
-    int          expert_id; // expert index (for key matching)
     char *       dev_ptr;   // cached GPU buffer (owns the allocation)
     size_t       size;      // byte size of this slot's allocation
     uint64_t     timestamp; // LRU timestamp (larger = more recently used)
@@ -22,9 +21,7 @@ struct ExpertCacheSlot {
 };
 
 // ── cache state ────────────────────────────────────────────────
-// Singleton: one cache per process.  In a multi-GPU setup each GPU
-// gets its own device allocation inside the slot, but the LRU book-
-// keeping is host-side and shared.
+// Singleton: one cache per process.
 
 static struct {
     ExpertCacheSlot slots[EXPERT_CACHE_MAX_SLOTS];
@@ -32,8 +29,12 @@ static struct {
     int             device;          // CUDA device ordinal
     bool            initialized;     // cache has been set up
     uint64_t        clock;           // monotonically increasing timestamp
-    size_t          default_expert_size; // per-expert byte size from init
 } g_cache;
+
+// moe-l2: model layer count, set by ggml_cuda_expert_cache_set_n_layers().
+// Slot formula uses it to cover the whole-model key space
+// (n_layers x 3 expert tensors x n_expert). Default 1 = old behaviour.
+static int g_n_layers = 1;
 
 //
 // Helpers
@@ -44,7 +45,6 @@ static void expert_cache_clear_slot(ExpertCacheSlot & slot) {
         CUDA_CHECK(cudaFree(slot.dev_ptr));
     }
     slot.cpu_src   = nullptr;
-    slot.expert_id = 0;
     slot.dev_ptr   = nullptr;
     slot.size      = 0;
     slot.timestamp = 0;
@@ -73,12 +73,28 @@ void ggml_cuda_expert_cache_maybe_init(int n_expert) {
         return;
     }
 
-    // Clamp to 1.0 so the formula is safe
-    if (fraction > 1.0f) {
-        fraction = 1.0f;
+    // moe-l2: layer count from env var set by llama.cpp at model load
+    // (crosses DSO boundary reliably). setter API kept as fallback.
+    const char * nl_env = std::getenv("MOE_L2_N_LAYERS");
+    if (nl_env && nl_env[0] != '\0') {
+        int nl = std::atoi(nl_env);
+        if (nl > 0) {
+            g_n_layers = nl;
+        }
     }
 
-    int n_slots = (int)std::ceil(fraction * (float)n_expert);
+    // moe-l2: allow up to 8x for large caches (512 slots max) so hot experts
+    // survive LRU pressure from the ~468 block accesses per token
+    if (fraction > 8.0f) {
+        fraction = 8.0f;
+    }
+
+    // moe-l2: scale slots by model layer count x 3 (gate/up/down expert
+    // tensors per layer) so the cache covers the whole-model key space.
+    // Old formula (fraction x n_expert) only covered ONE tensor's experts,
+    // so with 32 layers x 3 tensors the effective hit rate was ~0.
+    const float scale = 3.0f * (float)g_n_layers;
+    int n_slots = (int)std::ceil(fraction * (float)n_expert * scale);
     if (n_slots < 1) {
         n_slots = 1;
     }
@@ -92,8 +108,16 @@ void ggml_cuda_expert_cache_maybe_init(int n_expert) {
         return;
     }
 
-    // size=0: no pre-allocation; each slot allocates on first miss.
+    // size=0: no pre-allocation; each slot allocates on first set.
     ggml_cuda_expert_cache_init(device, n_slots, 0);
+    fprintf(stderr, "[A3] expert_cache initialized: %d slots on device %d (fraction=%.2f, n_expert=%d)\n",
+            n_slots, device, fraction, n_expert);
+}
+
+void ggml_cuda_expert_cache_set_n_layers(int n_layers) {
+    if (n_layers > 0) {
+        g_n_layers = n_layers;
+    }
 }
 
 void ggml_cuda_expert_cache_init(int device, int n_slots, size_t expert_size_bytes) {
@@ -106,15 +130,12 @@ void ggml_cuda_expert_cache_init(int device, int n_slots, size_t expert_size_byt
         actual_slots = 1;
     }
 
-    // Pre-allocate device memory for each slot at init time.
-    // This avoids per-token cudaMalloc which is slow.
     int prev_device;
     CUDA_CHECK(cudaGetDevice(&prev_device));
     CUDA_CHECK(cudaSetDevice(device));
 
     for (int i = 0; i < actual_slots; i++) {
         g_cache.slots[i].cpu_src   = nullptr;
-        g_cache.slots[i].expert_id = 0;
         g_cache.slots[i].dev_ptr   = nullptr;
         g_cache.slots[i].size      = 0;
         g_cache.slots[i].timestamp = 0;
@@ -127,8 +148,6 @@ void ggml_cuda_expert_cache_init(int device, int n_slots, size_t expert_size_byt
                 g_cache.slots[i].dev_ptr = (char *)ptr;
                 g_cache.slots[i].size    = expert_size_bytes;
             }
-            // If allocation fails, the slot stays null and will be
-            // lazily allocated on first miss later.
         }
     }
 
@@ -138,34 +157,43 @@ void ggml_cuda_expert_cache_init(int device, int n_slots, size_t expert_size_byt
     g_cache.device               = device;
     g_cache.initialized          = true;
     g_cache.clock                = 0;
-    g_cache.default_expert_size  = expert_size_bytes;
 }
 
-const void * ggml_cuda_expert_cache_lookup(
-    int expert_id,
-    const void * cpu_src,
-    size_t expert_size,
-    cudaStream_t stream)
-{
-    if (!g_cache.initialized) {
+const void * ggml_cuda_expert_cache_get(const void * cpu_src) {
+    if (!g_cache.initialized || !cpu_src) {
         return nullptr;
     }
 
-    const uint64_t now = ++g_cache.clock;
-
-    // ── 1. Linear scan for a hit ───────────────────────────────
+    // Linear scan for a hit
     for (int i = 0; i < g_cache.n_slots; i++) {
         ExpertCacheSlot & slot = g_cache.slots[i];
-        if (slot.valid &&
-            slot.expert_id == expert_id &&
-            slot.cpu_src   == cpu_src)
-        {
-            slot.timestamp = now;
-            return slot.dev_ptr;
+        if (slot.valid && slot.cpu_src == cpu_src) {
+            // Validate cached GPU pointer (may be stale across server requests)
+            if (slot.dev_ptr) {
+                cudaPointerAttributes attrs;
+                cudaError_t err = cudaPointerGetAttributes(&attrs, slot.dev_ptr);
+                if (err == cudaSuccess && attrs.type == cudaMemoryTypeDevice) {
+                    slot.timestamp = ++g_cache.clock;
+                    return slot.dev_ptr;
+                }
+                // Pointer is stale - free and invalidate
+                cudaFree(slot.dev_ptr);
+                slot.dev_ptr = nullptr;
+                slot.size = 0;
+                slot.valid = false;
+                slot.cpu_src = nullptr;
+            }
         }
     }
+    return nullptr; // miss
+}
 
-    // ── 2. Miss ── find LRU victim ────────────────────────────
+const void * ggml_cuda_expert_cache_set(const void * cpu_src, size_t size, const void * dev_ptr, cudaStream_t stream) {
+    if (!g_cache.initialized || !cpu_src || !dev_ptr || size == 0) {
+        return nullptr;
+    }
+
+    // ── Find LRU victim ────────────────────────────────────────
     int victim = -1;
     uint64_t oldest = UINT64_MAX;
 
@@ -182,19 +210,19 @@ const void * ggml_cuda_expert_cache_lookup(
     }
 
     if (victim < 0) {
-        return nullptr; // shouldn't happen with n_slots > 0
+        return nullptr;
     }
 
     ExpertCacheSlot & slot = g_cache.slots[victim];
 
-    // ── 3. Evict old entry ─────────────────────────────────────
+    // ── Evict old entry ────────────────────────────────────────
     if (slot.valid) {
-        // Device memory is reused -- no cudaFree, just overwrite.
+        slot.cpu_src = nullptr;
         slot.valid = false;
     }
 
-    // ── 4. Ensure device buffer is large enough ────────────────
-    if (slot.size < expert_size) {
+    // ── Ensure device buffer is large enough ────────────────────
+    if (slot.size < size) {
         if (slot.dev_ptr) {
             CUDA_CHECK(cudaFree(slot.dev_ptr));
         }
@@ -203,7 +231,7 @@ const void * ggml_cuda_expert_cache_lookup(
         CUDA_CHECK(cudaSetDevice(g_cache.device));
 
         void * ptr = nullptr;
-        cudaError_t err = cudaMalloc(&ptr, expert_size);
+        cudaError_t err = cudaMalloc(&ptr, size);
         CUDA_CHECK(cudaSetDevice(prev_device));
 
         if (err != cudaSuccess) {
@@ -212,18 +240,17 @@ const void * ggml_cuda_expert_cache_lookup(
             return nullptr;
         }
         slot.dev_ptr = (char *)ptr;
-        slot.size    = expert_size;
+        slot.size    = size;
     }
 
-    // ── 5. Async H2D copy ─────────────────────────────────────
+    // ── Async D2D copy ────────────────────────────────────────
     CUDA_CHECK(cudaMemcpyAsync(
-        slot.dev_ptr, cpu_src, expert_size,
-        cudaMemcpyHostToDevice, stream));
+        slot.dev_ptr, dev_ptr, size,
+        cudaMemcpyDeviceToDevice, stream));
 
-    // ── 6. Fill slot metadata ──────────────────────────────────
+    // ── Fill slot metadata ──────────────────────────────────────
     slot.cpu_src   = cpu_src;
-    slot.expert_id = expert_id;
-    slot.timestamp = now;
+    slot.timestamp = ++g_cache.clock;
     slot.valid     = true;
 
     return slot.dev_ptr;

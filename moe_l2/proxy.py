@@ -69,6 +69,21 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
             self._handle_api("generate", body)
         elif self.path == "/api/chat":
             self._handle_api("chat", body)
+        elif self.path.startswith("/v1/"):
+            # OpenAI API format: pass through, but still do prediction
+            try:
+                data = json.loads(body)
+                if "messages" in data:
+                    text = data["messages"][-1].get("content", "")
+                elif "prompt" in data:
+                    text = data["prompt"]
+                else:
+                    text = ""
+                if text:
+                    self._predict_and_preload(text)
+            except Exception:
+                pass
+            self._proxy_request("POST", body)
         else:
             self._proxy_request("POST", body)
 
@@ -170,7 +185,7 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(resp.content)
         except httpx.ConnectError:
-            self._send_error(502, f"cannot connect to ollama at {OLLAMA_BASE}")
+            self._send_error(502, f"cannot connect to backend at {self.backend_url}")
         finally:
             client.close()
 
