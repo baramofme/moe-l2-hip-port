@@ -184,16 +184,17 @@ class L2Cache:
     def preload_domain(
         self, domain: str, expert_map: dict
     ) -> None:
-        """Preload all experts for a predicted domain.
+        """Preload all experts for a predicted domain (smooth domain switch).
 
-        Loads the per-layer top expert IDs from the domain→expert mapping.
-        Domain-preferred experts are pinned while this domain is active.
-        Old domain pins are cleared first.
+        平滑过渡策略（2026-08-02 定稿：LRU 之上的策略层，非重写缓存）：
+        - 不主动 clear 旧域 pin：旧域专家靠 LRU 自然衰减（最久未用先走），
+          不做"切换领域→清空"（避免冷启动全部 miss）
+        - 新域专家按需 pin + 加载
+        - 骨干专家（_pinned）天然保留，不参与淘汰
 
         Args:
             domain: Domain label (e.g. "codegen", "math").
             expert_map: Domain→expert mapping dict (from predictor._get_map()).
-                Structure: {"domains": {domain: {"per_layer_top": {layer: [ids]}}}}
         """
         domain_data = expert_map.get("domains", {}).get(domain, {})
         per_layer_top = domain_data.get("per_layer_top", {})
@@ -201,10 +202,18 @@ class L2Cache:
             return
 
         with self._lock:
-            # Clear previous domain pins
-            for layer_idx in range(self.n_layers):
-                self._domain_pinned[layer_idx].clear()
+            # 平滑切换：旧域专家降级为 LRU 可淘汰（仍留在缓存，靠 LRU 自然衰减），
+            # 新域专家 pin。不清空缓存，避免冷启动全部 miss；
+            # 不保留旧域 pin，避免 pin 累积占满 slots 使 LRU 失效。
             self._active_domain = domain
+
+            # 旧域 pin 全部降级（保留在 slots，但不再占 pin 名额）
+            for layer_idx in range(self.n_layers):
+                for eid in list(self._domain_pinned[layer_idx]):
+                    if eid not in self._pinned[layer_idx]:
+                        # 降级：从 pin 移除，重新进入 LRU 追踪（保留缓存数据）
+                        self._touch(layer_idx, eid)
+                self._domain_pinned[layer_idx].clear()
 
             # Collect loads and pin
             to_load: list[tuple[int, int]] = []
@@ -219,6 +228,41 @@ class L2Cache:
                     self._domain_pinned[layer].add(eid)
 
             # Submit async loads
+            for layer, eid in to_load:
+                if (layer, eid) not in self._pending_loads:
+                    f = self._loader.submit(self._load_expert, layer, eid)
+                    self._pending_loads[(layer, eid)] = f
+
+    def promote_domain(self, domain: str, expert_map: dict) -> None:
+        """预热：检测到路由漂移时抬高目标域专家的 LRU 优先级。
+
+        平滑过渡策略的"预热"动作——不重写缓存，只是把目标域
+        已缓存的专家手动移到 LRU 尾部（MRU），让它们在淘汰时
+        排最后；未缓存的走正常异步加载。
+
+        Args:
+            domain: Target domain label.
+            expert_map: Domain→expert mapping dict.
+        """
+        domain_data = expert_map.get("domains", {}).get(domain, {})
+        per_layer_top = domain_data.get("per_layer_top", {})
+        if not per_layer_top:
+            return
+
+        with self._lock:
+            self._active_domain = domain
+            to_load: list[tuple[int, int]] = []
+            for layer_str, expert_ids in per_layer_top.items():
+                layer = int(layer_str)
+                if not (0 <= layer < self.n_layers):
+                    continue
+                for eid in expert_ids:
+                    if self._is_cached(layer, eid):
+                        # 已缓存 → 抬高 LRU 优先级（MRU），不 pin 也可保留
+                        self._touch(layer, eid)
+                    else:
+                        to_load.append((layer, eid))
+            # 未缓存的正常异步加载
             for layer, eid in to_load:
                 if (layer, eid) not in self._pending_loads:
                     f = self._loader.submit(self._load_expert, layer, eid)
