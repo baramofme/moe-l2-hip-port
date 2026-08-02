@@ -10,14 +10,14 @@ English | [**中文**](README_zh.md)
 | 你的显卡 | 正常能跑 | **用了 moe-l2** |
 |----------|---------|-----------------|
 | 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ |
-| **8 GB** | 7B 稠密模型 | **Qwen2.5-32B-A3B (32B MoE) ✅** |
+| **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** |
 | 12 GB | 13B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 
 ```bash
 pip install moe-l2
 moe-l2 download-bins
-moe-l2 start --model model.gguf --l2-size 4GB
+moe-l2 start --model model.gguf --gpu
 ```
 
 连接 `localhost:11435`，现有工具（curl、Open WebUI、LangChain）无需改配置。
@@ -67,25 +67,26 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
                          └───────────┼───────────────┘
                                      ▼
                          ┌─────────────────────────┐
-                         │  llama.cpp / ollama      │
-                         │  (:11434, CUDA GPU)      │
-                         │  只放活跃 expert          │
+                         │  llama-server (:11436)   │
+                         │  host-buffer 专家：CPU    │
+                         │  pinned 零显存，调度器每  │
+                         │  步只拷激活专家 → GPU 直算 │
                          └─────────────────────────┘
 ```
 
-### 四级存储模型
+### 数据驻留层级（2026-08-02 架构）
 
 ```
 L0 ─ CPU 路由器    门控路由 + 领域分类（你的 CPU）
  ↑
-L1 ─ GPU 显存      活跃推理 — expert + KV cache（你的显卡）
+L1 ─ GPU 显存      激活 expert 计算 + KV cache（你的显卡，只放激活权重）
  ↑
-L2 ─ RAM 热缓存    基于领域的 LRU 缓存，mmap 共享内存（本项目的核心）
+L2 ─ CPU pinned    全部专家权重驻留 host buffer（零显存，调度器按需拷激活专家）
  ↑
-L3 ─ SSD 冷存储    完整 expert 权重，按需从硬盘加载
+L3 ─ SSD 冷存储    GGUF 文件 mmap，首次加载后常驻 RAM
 ```
 
-越靠近 GPU 越快但空间越小，越远越慢但越便宜。调度器把活跃数据留在高速层，其余推到下层。
+专家权重整体驻留 CPU pinned 内存（host buffer，零显存），GPU 每步只拷激活的专家直算——这就是为什么 32B MoE 只占 ~2.1 GB 显存。可选 sched-cache 在 L1/L2 之间再加一层热专家 D2D 缓存（对 DS 类小专家高命中模型有效）。
 
 ---
 
@@ -117,21 +118,21 @@ pip install moe-l2
 ```bash
 moe-l2 download-bins
 ```
-从 GitHub Release 拉取预编译的 CUDA llama-server（约 530 MB）。
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.1.1，约 96.5 MB）。
 
 ### 3. 启动
 
-**CPU 模式**（仅 expert 缓存，不省显存）：
+**GPU 模式（推荐，host-buffer 专家 GPU 直算，省 93% 显存）：**
+```bash
+moe-l2 start --model /path/to/model.gguf --gpu
+```
+
+**纯代理模式**（不省显存，仅 expert 缓存）：
 ```bash
 moe-l2 start --model /path/to/model.gguf --l2-size 4GB
 ```
 
-**GPU 模式**（A3 补丁版 llama-server，省 93% 显存）：
-```bash
-moe-l2 start --model /path/to/model.gguf --l2-size 4GB --gpu
-```
-
-代理启动在 `localhost:11435`，直接当普通 OpenAI/Ollama 用就行。
+代理启动在 `localhost:11435`，直接当普通 OpenAI 兼容接口用就行（GPU 模式下后端 llama-server 监听 11436）。
 
 ### 4. 看统计
 
@@ -159,7 +160,7 @@ moe-l2 stats
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：不在 git 中追踪（~530 MB），运行时通过 `moe-l2 download-bins` 获取。
+> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.1.1 约 96.5 MB），运行时通过 `moe-l2 download-bins` 获取。
 
 ---
 
@@ -167,9 +168,9 @@ moe-l2 stats
 
 1. 你的 prompt 到达 moe-l2 代理
 2. 领域预测器分类（代码生成 → 数学 → 中文技术 ……）
-3. L2 缓存从 SSD 预加载预测的 expert 到共享内存（`/dev/shm/`）
-4. 请求转发到 llama.cpp/ollama — 热 expert 从 RAM 加载（~1150 µs）而非冷 SSD（~6500 µs）
-5. 同一会话缓存命中率超过 85%
+3. 专家权重驻留 CPU pinned 内存（host buffer，**零显存**）——不再整体塞进 GPU
+4. llama.cpp 调度器每步只把**激活的专家**拷到 GPU 直算（cuBLAS）
+5. 可选 sched-cache（`GGML_CUDA_EXPERT_CACHE=0.25`）：命中热专家走 D2D 免 PCIe，DS 类模型 Prompt +211%
 
 ---
 
@@ -178,7 +179,7 @@ moe-l2 stats
 - **仅 Linux x86_64** — 预编译二进制目标为 Linux AMD64（CUDA `.so` + `llama-server`）
 - macOS、Windows、ARM Linux **暂不支持**
 - **强烈建议使用 NVMe 固态硬盘**
-- `--gpu` 模式需要 NVIDIA 显卡（下一阶段支持 GPU LRU expert 缓存）
+- `--gpu` 模式需要 NVIDIA 显卡（CUDA 后端）
 
 ---
 
@@ -218,11 +219,10 @@ moe-l2 stats
 - ✅ 领域预测器（关键词 + 可选语义）
 - ✅ L2 缓存（mmap LRU、线程安全、异步预加载）
 - ✅ 透明代理（HTTP/SSE 转发）
-- ✅ CLI（start/stats/collect，自动模型检测，GPU 模式）
-- ✅ GPU 模式已验证（RTX 4090，DS-V2-Lite，~1.6 GiB 显存，95% 节省）
+- ✅ CLI（start/stats/collect/embed-map/download-bins，自动模型检测，GPU 模式）
+- ✅ host-buffer 专家 GPU 直算（2026-08-02）：DS-V2-Lite 12.5 → 37.5 t/s、Qwen3.6-A3B 10 → 46.8 t/s，VRAM 1.6 / 2.1 GB — 专家驻留 CPU pinned 零显存，调度器只拷激活专家
+- ✅ cache 挂 sched 拷贝层（2026-08-02）：DS 类模型 Prompt 99 → 308 t/s（+211%，cache=0.25，VRAM 不变）；Qwen/Mixtral 无收益不开
 - ✅ PyPI 包（`moe-l2`）
-- ✅ GPU LRU expert 缓存（已验证 Qwen3.6 + DS-V2-Lite，7 级别 × 3 类型，0 崩溃）
-- ✅ 专家缓存适用边界已实测确认（Mixtral 8x7B / RTX 4090）：`--no-mmap` 下专家本就全量驻留 GPU，缓存是多余层且会拖慢（3.7 → 3.4 t/s）；仅在 mmap（专家在 CPU RAM）形态下缓存才有意义。CLI 已默认 mmap 配置
 
 ---
 

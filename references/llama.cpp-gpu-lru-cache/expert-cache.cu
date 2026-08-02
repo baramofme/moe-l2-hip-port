@@ -170,22 +170,49 @@ const void * ggml_cuda_expert_cache_get(const void * cpu_src) {
         if (slot.valid && slot.cpu_src == cpu_src) {
             // Validate cached GPU pointer (may be stale across server requests)
             if (slot.dev_ptr) {
-                cudaPointerAttributes attrs;
-                cudaError_t err = cudaPointerGetAttributes(&attrs, slot.dev_ptr);
-                if (err == cudaSuccess && attrs.type == cudaMemoryTypeDevice) {
-                    slot.timestamp = ++g_cache.clock;
-                    return slot.dev_ptr;
-                }
-                // Pointer is stale - free and invalidate
-                cudaFree(slot.dev_ptr);
-                slot.dev_ptr = nullptr;
-                slot.size = 0;
-                slot.valid = false;
-                slot.cpu_src = nullptr;
+                // TEMP-DEBUG4: skip cudaPointerGetAttributes sync check to test
+                // whether it is the ~3.1ms/mmid cost. Re-enable for server mode.
+                slot.timestamp = ++g_cache.clock;
+                return slot.dev_ptr;
             }
         }
     }
     return nullptr; // miss
+}
+
+bool ggml_cuda_expert_cache_copy_if_hit(
+        const void * cache_key,
+        void * dst_gpu, size_t dst_offset,
+        size_t size, cudaStream_t stream) {
+    if (!g_cache.initialized || !cache_key || !dst_gpu || size == 0) {
+        return false;
+    }
+
+    const void * src = ggml_cuda_expert_cache_get(cache_key);
+    if (src == nullptr) {
+        return false; // miss — caller falls back to CPU→GPU copy
+    }
+
+    // Hit: D2D copy from the cache slot into the destination GPU buffer.
+    // The cache slot's device pointer is owned by the cache and stays valid
+    // across requests (unlike sched input-copy buffers).
+    {
+        // [moe-l2 debug] log pointer types once to diagnose invalid-argument
+        static int dbg = 0;
+        if (dbg < 6) {
+            cudaPointerAttributes pa_dst, pa_src;
+            cudaError_t e_dst = cudaPointerGetAttributes(&pa_dst, (char *)dst_gpu + dst_offset);
+            cudaError_t e_src = cudaPointerGetAttributes(&pa_src, src);
+            fprintf(stderr, "[SCACHE-DBG] dst=%p dst_attr_err=%d type=%d src=%p src_err=%d type=%d size=%zu\n",
+                (char *)dst_gpu + dst_offset, (int)e_dst, e_dst == cudaSuccess ? (int)pa_dst.type : -1,
+                src, (int)e_src, e_src == cudaSuccess ? (int)pa_src.type : -1, size);
+            dbg++;
+        }
+    }
+    CUDA_CHECK(cudaMemcpyAsync(
+        (char *)dst_gpu + dst_offset, src, size,
+        cudaMemcpyDeviceToDevice, stream));
+    return true;
 }
 
 const void * ggml_cuda_expert_cache_set(const void * cpu_src, size_t size, const void * dev_ptr, cudaStream_t stream) {

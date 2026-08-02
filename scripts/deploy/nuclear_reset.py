@@ -6,6 +6,7 @@
 # ║    python3 nuclear_reset.py <password>                ║
 # ║  Edit HOST/PORT/USER before use.                     ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性部署脚本，SSH 端口已失效。
 #
 """Nuclear option: unload/reload nvidia modules to force GPU memory cleanup."""
 import pexpect, sys

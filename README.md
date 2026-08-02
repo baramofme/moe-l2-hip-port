@@ -7,7 +7,8 @@
 ```bash
 pip install moe-l2                   # keyword-only predictor (zero extra deps)
 pip install moe-l2[predictor]        # hybrid: keyword + semantic embedding
-moe-l2 start --model model.gguf --l2-size 4GB
+moe-l2 download-bins                 # pre-built CUDA llama-server (host-buffer patched)
+moe-l2 start --model model.gguf --gpu
 ```
 
 Your tools (curl, Open WebUI, LangChain) connect to `localhost:11435` — no client changes needed.
@@ -19,8 +20,9 @@ MoE models have many "experts" but only activate a few per token. moe-l2 predict
 ```
 user → moe-l2 proxy (localhost:11435)
     ├── predict domain
-    ├── preload domain experts → /dev/shm/moe_l2/
-    └── forward to ollama (localhost:11434)
+    ├── host-buffer experts (CPU pinned, zero VRAM)
+    └── forward to llama-server (localhost:11436, CUDA GPU)
+        └── scheduler copies only activated experts to GPU per step
 ```
 
 ### Real-world benchmark
@@ -28,7 +30,7 @@ user → moe-l2 proxy (localhost:11435)
 | Your GPU | Normally fits | **With moe-l2** |
 |----------|--------------|-----------------|
 | 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ |
-| **8 GB** | 7B dense | **Qwen2.5-32B-A3B (32B MoE) ✅** |
+| **8 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** |
 | 12 GB | 13B dense | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ✅ |
 
@@ -46,26 +48,26 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 ## Usage
 
-### 1. L2 proxy (recommended)
+### 1. L2 proxy with GPU host-buffer (recommended)
 
-Start the transparent proxy — sits between your client and ollama:
+Start the transparent proxy with the bundled host-buffer llama-server:
 
 ```bash
-moe-l2 start --model /models/DeepSeek-V2-Lite.Q4_K_M.gguf --l2-size 4GB
+moe-l2 start --model /models/DeepSeek-V2-Lite.Q4_K_M.gguf --gpu
 ```
 
-All default ollama tools work through it (curl, open-webui, langchain):
+The proxy exposes OpenAI-compatible endpoints — all your tools work through it (curl, open-webui, langchain):
 
 ```bash
 # streaming
-curl http://localhost:11435/api/chat -d '{
+curl http://localhost:11435/v1/chat/completions -d '{
   "model":"qwen3:4b",
   "messages":[{"role":"user","content":"write a Python script"}],
   "stream":true
 }'
 
 # blocking
-curl http://localhost:11435/api/chat -d '{
+curl http://localhost:11435/v1/chat/completions -d '{
   "model":"qwen3:4b",
   "messages":[{"role":"user","content":"hello"}],
   "stream":false
@@ -134,9 +136,10 @@ cache.preload(domain_to_expert_ids[domain])
 └────────────────────────┼───────────────────────────────────┘
                          ▼
 ┌────────────────────────────────────────────────────────────┐
-│                ollama / llama.cpp (port 11434)              │
-│                Hot experts in GPU VRAM                      │
-│                Cold experts loaded from RAM/SSD via mmap    │
+│         llama-server (port 11436, CUDA GPU)                │
+│         host-buffer experts: CPU pinned, zero VRAM         │
+│         scheduler copies only activated experts → GPU      │
+│         (optional sched-cache: D2D for hot experts)        │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -144,8 +147,8 @@ cache.preload(domain_to_expert_ids[domain])
 
 | Command | Description |
 |---------|-------------|
-| `moe-l2 start --model <path> --l2-size <size>` | Start proxy + cache |
-| `moe-l2 start --model <path> --gpu` | Start with GPU-accelerated llama-server |
+| `moe-l2 start --model <path> --gpu` | Start proxy + host-buffer llama-server (recommended) |
+| `moe-l2 start --model <path> --l2-size <size>` | Start proxy + cache only (no GPU) |
 | `moe-l2 stats --port <port>` | Show live cache stats |
 | `moe-l2 download-bins [--release TAG]` | Download pre-built GPU binaries from GitHub |
 | `moe-l2 collect --model <path>` | Collect MoE routing data → `~/.moe-l2/maps/domain_expert_map.json` |
@@ -153,11 +156,11 @@ cache.preload(domain_to_expert_ids[domain])
 
 Options:
 - `--model auto`: scan `/opt/data/models/*.gguf`
-- `--l2-size 4GB` / `--l2-size 512MB`: target cache size
+- `--l2-size 4GB` / `--l2-size 512MB`: target cache size (proxy-only mode)
 - `--port 11435` (default)
-- `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU)
+- `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU; spawns bundled host-buffer llama-server on 11436)
 
-> **GPU binaries**: Not tracked in git (~530 MB). Fetched at runtime via `moe-l2 download-bins`. The repo does not track 500MB+ .so files. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~96.5 MB on the `bins-v0.1.1` release). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 
@@ -184,24 +187,23 @@ Beyond the proxy layer, moe-l2 ships llama.cpp patches that compile expert handl
 
 **1. Host-buffer expert GPU fast path (recommended, 2026-08-02).** Expert tensors are loaded into a **CUDA host buffer** (CPU pinned memory, zero VRAM) instead of a plain CPU buffer. The scheduler then uses its MoE expert-copy optimization — it copies **only the activated experts** to GPU per step instead of the whole expert tensor — and the GPU runs the expert MUL_MAT_ID on the fast path. This is what the benchmark above measures (DS 37.5 / Qwen 46.8 t/s at 1.6 / 2.1 GB VRAM).
 
-**2. A3 LRU expert cache (historical, `--expert-cache`).** An LRU cache that keeps recent experts on GPU. Verified on RTX 4090 with DS-V2-Lite: VRAM 6.6 GB → 1.2 GB (5.64×) at 8.2 t/s. This path is only useful when experts are CPU-hosted; it is now superseded by the host-buffer fast path, which is faster at the same VRAM.
+**2. A3 LRU expert cache (historical, `--expert-cache`).** An LRU cache that keeps recent experts on GPU. In the old `--cpu-moe` CPU-compute architecture it cut VRAM from 6.6 GB → 1.2 GB (5.64×) at 8.2 t/s. In the current host-buffer architecture the cache is hooked into the scheduler copy layer (`GGML_CUDA_EXPERT_CACHE`) and only pays off for small, frequently-hit experts (see below).
 
 ### When the cache helps (and when it doesn't)
 
-The expert cache only pays off when experts actually live in **CPU RAM** (default `mmap` mode). Verified on RTX 4090 with Mixtral 8x7B:
+The sched-cache only pays off when experts are **small and frequently hit**. Verified on RTX 4090 (host-buffer, 2026-08-02):
 
-| Mode | Expert location | Gen speed | Cache value |
-|------|----------------|-----------|-------------|
-| `--no-mmap` (all weights on GPU) | GPU VRAM | **3.7 t/s** | ❌ cache is a no-op layer |
-| `--no-mmap` + cache | GPU VRAM | 3.4-3.5 t/s | ❌ slower (cache forces the generic expert path, ~3 ms/token fixed overhead regardless of hit rate) |
-| default `mmap` + cache | CPU RAM | ~1 t/s (scheduler copy bound) | ⚠️ not recommended |
-| default `mmap` (no cache) | CPU RAM | 0.9 t/s | baseline |
+| Model | Expert size | Top-k | Cache value |
+|-------|------------|-------|-------------|
+| DS-V2-Lite | 1.55 MB | top-6 | ✅ **Prompt +211%, Gen +5%** (cache=0.25) |
+| Qwen3.6-A3B | ~1 MB | top-8 | ❌ no gain (experts too small, copy cost already trivial) |
+| Mixtral-8x7B | 252 MB | top-2 | ❌ no gain, +660 MiB VRAM (top-2 hit rate too low) |
 
-Key findings (2026-08-01, per-segment CUDA timing):
+Key findings (2026-08-02, cache hooked into the scheduler input-copy layer):
 
-- With `--no-mmap`, experts are **already fully resident in GPU VRAM** (copies are device-to-device, 100% on-GPU) — the cache adds nothing but an extra layer.
-- Turning the cache on forces the generic `MUL_MAT_ID` pipeline (host-side id sorting + two stream syncs ≈ 3.1 ms/token) **independent of hit rate** — hit rate 27% vs 49% both showed identical ~3.1 ms. The fast expert path only runs with the cache **off**.
-- Conclusion: use the cache only when experts are CPU-hosted (mmap). The bundled CLI defaults to this configuration (`mmap` default, no `--no-mmap` flag).
+- The cache sits in `copy_experts`: on hit it does a D2D copy (no PCIe round-trip), on miss it falls back to the host-buffer CPU→GPU copy and writes back. It only intercepts single-expert groups.
+- Benefit = **expert size × hit rate**. DS (1.55 MB, top-6) wins big; Qwen (~1 MB) pays for itself at best; Mixtral (252 MB, top-2) never hits enough to pay for its VRAM slots.
+- Recommended: `GGML_CUDA_EXPERT_CACHE=0.25` for DS-class models (16 slots/layer cover all hot experts, VRAM unchanged). Leave it off for Qwen/Mixtral.
 
 > Run the demo yourself: `bash examples/demo_a3_compression.sh` (edit paths first).
 
@@ -225,7 +227,7 @@ Key findings (2026-08-01, per-segment CUDA timing):
 - ✅ Transparent proxy (HTTP/SSE forwarding)
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
 - ✅ Host-buffer expert GPU fast path (2026-08-02): DS-V2-Lite 12.5 → 37.5 t/s, Qwen3.6-A3B 10 → 46.8 t/s at 1.6 / 2.1 GB VRAM — experts in CPU pinned memory, only activated experts copied to GPU
-- ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090: under `--no-mmap` experts are already fully resident in VRAM, so the cache is a no-op layer that adds ~3 ms/token overhead (3.7 → 3.4 t/s); it only pays off when experts are CPU-hosted (mmap). CLI defaults to the mmap configuration.
+- ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090 (2026-08-02, sched-cache): cache benefit = expert size × hit rate — DS-V2-Lite (1.55 MB, top-6) gets Prompt +211% / Gen +5% at cache=0.25; Qwen (~1 MB) and Mixtral (252 MB, top-2) get no gain. Recommended: cache=0.25 for DS-class, off otherwise.
 - ✅ PyPI package (`moe-l2`)
 
 ---

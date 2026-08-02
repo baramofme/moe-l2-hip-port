@@ -6,6 +6,8 @@ set -euo pipefail
 # ║  hardcoded to the author's environment.              ║
 # ║  Edit MODEL, BIN before use.                         ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 旧架构（--cpu-moe 专家 CPU 计算）一次性调试脚本。
+# 当前架构见 examples/demo_a3_compression.sh（host-buffer 三模式对比）。
 #
 MODEL=/root/autodl-tmp/DeepSeek-V2-Lite-Chat-Uncensored.Q2_K.gguf
 BIN=/root/llama.cpp/build/bin/llama-cli

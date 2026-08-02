@@ -1876,6 +1876,36 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     ggml_cuda_mul_mat_cublas(ctx, src0, src1, dst);
 }
 
+// [moe-l2 A3 fix] Returns true when the expert tensor's data physically lives in
+// CPU RAM (mmap'd host memory) rather than GPU VRAM. Gates the A3 per-expert
+// H2D + cache pipeline: it only makes sense when experts are truly on the host.
+// With --no-mmap experts are fully in VRAM, so forcing the A3 pipeline then is
+// pure overhead (the slow generic MUL_MAT_ID path, ~3ms fixed cost).
+static bool ggml_cuda_experts_on_host(const ggml_tensor * src0) {
+    static std::mutex mtx;
+    static std::unordered_map<const void *, bool> cache;
+    const void * ptr = src0->data;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        auto it = cache.find(ptr);
+        if (it != cache.end()) {
+            return it->second;
+        }
+    }
+    bool on_host = true;
+    cudaPointerAttributes pa;
+    cudaError_t err = cudaPointerGetAttributes(&pa, ptr);
+    // Device pointers are always registered with CUDA -> cudaSuccess + Device.
+    // mmap'd CPU RAM (unregistered / host / unregistered-managed) is treated as
+    // on-host, which is the case the A3 pipeline targets.
+    if (err == cudaSuccess && pa.type == cudaMemoryTypeDevice) {
+        on_host = false;
+    }
+    std::lock_guard<std::mutex> lock(mtx);
+    cache[ptr] = on_host;
+    return on_host;
+}
+
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     // [SCHED-CHECK] is expert src0 a host (CPU) or device (GPU) pointer?
     {
@@ -1916,6 +1946,19 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
 
+    // [moe-l2 sched-cache 2026-08-02] Init the expert cache unconditionally at
+    // the top of mul_mat_id, BEFORE the fast-path early returns. Previously
+    // maybe_init lived in the A3 slow pipeline (line ~2105), which is never
+    // reached when experts run the GPU fast path (host buffer + OFFLOAD_MIN_BATCH=1).
+    // The scheduler's input-copy path (ggml-backend.cpp copy_experts) queries the
+    // cache via proc-address, so it must be initialized even on the fast path.
+    {
+        const int64_t ne02_init = dst->src[0] ? dst->src[0]->ne[2] : 0;
+        if (ne02_init > 0) {
+            ggml_cuda_expert_cache_maybe_init(ne02_init);
+        }
+    }
+
     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
     if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
         // Skip early-return paths when A3 wants CPU-hosted experts to take the
@@ -1927,9 +1970,11 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             }();
             // moe-l2: expert weights stay in mmap'd CPU RAM even though their buffer
             // type is CUDA0 (VMM virtual alloc, physical pages never committed).
-            // With GGML_CUDA_EXPERT_CACHE set, always take the A3 path below
-            // (experts_on_host forced true) so per-expert H2D + cache applies.
-            const bool skip = a3_on && src0->buffer;
+            // With GGML_CUDA_EXPERT_CACHE set, take the A3 path below ONLY when
+            // experts are truly on the host (mmap). If experts are fully in VRAM
+            // (--no-mmap), keep the fast early-return paths — forcing the slow
+            // generic MUL_MAT_ID pipeline is pure overhead (~3ms fixed cost).
+            const bool skip = a3_on && ggml_cuda_experts_on_host(src0);
 
             if (skip) goto skip_early_returns;
         }
@@ -2011,7 +2056,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     ids_to_sorted_host.insert(ids_to_sorted_host.end(), ids_from_sorted_host.begin(), ids_from_sorted_host.end());
 
     CUDA_CHECK(cudaMemcpyAsync(ids_buf_dev.ptr, ids_to_sorted_host.data(), 2*ne_get_rows*sizeof(int32_t), cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    // TEMP-DEBUG11: removed 2nd stream sync (same-stream ordering suffices)
 
     const int32_t * ids_to_sorted   = ids_buf_dev.ptr + 0*ne_get_rows;
     const int32_t * ids_from_sorted = ids_buf_dev.ptr + 1*ne_get_rows;
@@ -2033,10 +2078,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             const char * env = getenv("GGML_CUDA_EXPERT_CACHE");
             return env && env[0] != 0;
         }();
-        if (a3_on) {
+        if (a3_on && ggml_cuda_experts_on_host(src0)) {
             // moe-l2: expert tensors live in mmap'd CPU RAM behind a virtual CUDA
             // buffer (VMM, physical pages uncommitted) -> force the A3 per-expert
             // H2D + cache pipeline regardless of the buffer type marker.
+            // Only when experts are truly on the host; --no-mmap (experts in VRAM)
+            // keeps experts_on_host=false so the GPU fast path is used.
             experts_on_host = true;
         }
     }
@@ -2089,7 +2136,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             tmp_slice.ne[2] = 1;
             const size_t expert_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, &tmp_slice);
             ggml_cuda_pool_alloc<char> temp_gpu(ctx.pool());
-            temp_gpu.alloc(expert_alloc);
+            { static long long a=0, b=0; static int c=0; long long t0=ggml_time_us();
+              temp_gpu.alloc(expert_alloc);
+              a += ggml_time_us()-t0;
+              if ((++c % 500)==0) fprintf(stderr, "[SEG] alloc_avg=%.1fus/call (%d calls)\n", (double)a/c, c);
+              (void)b;
+            }
 
             for (int ei = 0; ei < (int)used_experts.size(); ei++) {
                 const int64_t i02 = used_experts[ei];
@@ -2103,8 +2155,32 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
                 const void * cache_key = (const void *)(name_h ^ (uint64_t)i02 * 0x9E3779B97F4A7C15ULL);
 
                 // -- Try cache hit --
+                { static long long g=0, m=0, w=0; static int c=0;
+                  long long t0=ggml_time_us();
+                  const void * gpu_ptr = ggml_cuda_expert_cache_get(cache_key);
+                  g += ggml_time_us()-t0;
+                  t0 = ggml_time_us();
+                  if (gpu_ptr) { w += ggml_time_us()-t0; }  // hit: no copy
+                  else {
+                    // miss path timing is folded into compute below
+                  }
+                  if ((++c % 500)==0) fprintf(stderr, "[SEG] get_avg=%.1fus cmp_avg=%.1fus (%d)\n", (double)g/c, (double)w/c, c);
+                  (void)m;
+                }
                 const void * gpu_ptr = ggml_cuda_expert_cache_get(cache_key);
-
+                { static int dbg_cnt = 0; static int dbg_hit = 0; static int dbg_miss = 0;
+                  if (dbg_cnt < 8 || (dbg_cnt % 200) == 0) {
+                    fprintf(stderr, "[CACHE-DBG] cnt=%d key=%p name='%s' i02=%lld %s\n",
+                        dbg_cnt, cache_key, src0->name ? src0->name : "(null)", (long long)i02,
+                        gpu_ptr ? "HIT" : "MISS");
+                  }
+                  if (gpu_ptr) dbg_hit++; else dbg_miss++;
+                  dbg_cnt++;
+                  if ((dbg_cnt % 500) == 0) {
+                    fprintf(stderr, "[CACHE-DBG] === cnt=%d hit=%d miss=%d hitrate=%.1f%% ===\n",
+                        dbg_cnt, dbg_hit, dbg_miss, 100.0*dbg_hit/dbg_cnt);
+                  }
+                }
 
 
                 if (!gpu_ptr) {
@@ -2117,9 +2193,15 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
                     const cudaError_t pe = cudaPointerGetAttributes(&pa, cpu_src);
                     const bool cpu_src_is_dev = (pe == cudaSuccess && pa.type == cudaMemoryTypeDevice);
                     const cudaMemcpyKind kind = cpu_src_is_dev ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
-                    // Same-stream ordering makes the sync unnecessary: the compute
-                    // kernels for this expert are enqueued after the copy on ctx.stream().
-                    CUDA_CHECK(cudaMemcpyAsync(temp_gpu.ptr, cpu_src, nb02, kind, ctx.stream()));
+                    { static long long a=0; static int c=0; static int isdev=0;
+                      if (cpu_src_is_dev) isdev++;
+                      long long t0=ggml_time_us();
+                      CUDA_CHECK(cudaMemcpyAsync(temp_gpu.ptr, cpu_src, nb02, kind, ctx.stream()));
+                      CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+                      a += ggml_time_us()-t0;
+                      if ((++c % 500)==0) fprintf(stderr, "[SEG] copy_sync_avg=%.1fus kind=%s dev_ratio=%.0f%% (%d)\n",
+                        (double)a/c, cpu_src_is_dev?"D2D":"H2D", 100.0*isdev/c, c);
+                    }
 
                     // Write back to cache for next token (slot sized with padding)
                     const void * cached = ggml_cuda_expert_cache_set(
@@ -2165,11 +2247,20 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
                 dst_slice.nb[3]  = dst_slice.ne[2] * dst_slice.nb[2];
                 dst_slice.data   = dst_data_cur;
 
+                { static long long a=0; static int c=0; static long long aq=0; static int cq=0;
+                  long long t0=ggml_time_us();
                 if (tokens_per_expert[i02] > MMVQ_MAX_BATCH_SIZE) {
                     // Batch > MMVQ limit: use the batched quantized kernel (mmq)
                     ggml_cuda_mul_mat_q(ctx, &src0_slice, &src1_slice, nullptr, &dst_slice);
                 } else {
                     ggml_cuda_mul_mat_vec_q(ctx, &src0_slice, &src1_slice, nullptr, &dst_slice);
+                }
+                  CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+                  long long dt = ggml_time_us()-t0;
+                  if (tokens_per_expert[i02] > MMVQ_MAX_BATCH_SIZE) { aq+=dt; cq++; }
+                  else { a+=dt; c++; }
+                  if (((c+cq) % 500)==0) fprintf(stderr, "[SEG] vec_avg=%.1fus(%d) q_avg=%.1fus(%d) tot=%d\n",
+                    c?(double)a/c:0.0, c, cq?(double)aq/cq:0.0, cq, c+cq);
                 }
                 CUDA_CHECK(cudaGetLastError());
 
@@ -5527,6 +5618,15 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
         return (void *)ggml_backend_cuda_unregister_host_buffer;
+    }
+    // [moe-l2 sched-cache 2026-08-02] expose expert cache to the scheduler
+    // (ggml-backend.cpp copy_experts queries these via proc-address to avoid
+    // a direct CUDA include in the generic backend layer).
+    if (strcmp(name, "ggml_cuda_expert_cache_copy_if_hit") == 0) {
+        return (void *)ggml_cuda_expert_cache_copy_if_hit;
+    }
+    if (strcmp(name, "ggml_cuda_expert_cache_set") == 0) {
+        return (void *)ggml_cuda_expert_cache_set;
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;

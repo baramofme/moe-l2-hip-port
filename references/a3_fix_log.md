@@ -1,5 +1,9 @@
 # A3 LRU Expert Cache 修复记录
 
+> **历史记录（2026-07-29）**：本文档记录 A3 LRU expert cache 在**旧架构（--cpu-moe，专家 CPU 计算）**下的三个 bug 修复过程。
+> **2026-08-02 起已被 host-buffer 架构取代**：专家走 CUDA host buffer（CPU pinned，零 VRAM）+ GPU 直算，cache 挂到 sched 拷贝层（见 [cache-sched-layer-benchmark.md](cache-sched-layer-benchmark.md)）。
+> 以下数据仅代表旧架构形态，不再反映当前性能。
+
 ## 发现的问题（3个）
 
 ### 1. `--expert-cache` CLI 参数未传后端

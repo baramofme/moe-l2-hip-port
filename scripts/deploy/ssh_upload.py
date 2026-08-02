@@ -5,6 +5,7 @@
 # ║  HOST/PORT/USER/KEY are hardcoded in main().         ║
 # ║  Edit KEY path and HOST/PORT/USER before use.        ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性部署脚本，SSH 端口已失效。
 #
 """Upload run_bench_v4.sh to cloud server via SSH (key auth) and execute it."""
 

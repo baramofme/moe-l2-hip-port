@@ -5,6 +5,7 @@
 # ║  HOST/PORT/USER are hardcoded. Edit before use.      ║
 # ║  Also edits local file path (/opt/data/reset_gpu.py). ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性部署脚本，SSH 端口已失效。
 #
 """SCP upload using paramiko-style approach, but with shell pipe.
 Encode file as base64, SSH in, decode on remote side."""

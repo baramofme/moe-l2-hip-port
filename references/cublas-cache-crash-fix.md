@@ -1,5 +1,9 @@
 # llama.cpp expert_cache cuBLAS illegal memory access 修复记录
 
+> **历史记录（2026-07-29）**：本文档记录 A3 LRU expert cache 在**旧架构**下对超大 tensor（LM head 970 MB）反复缓存导致的 CUDA 崩溃修复。
+> **2026-08-02 起架构已升级**（host-buffer + cache 挂 sched 拷贝层），该崩溃路径已不再存在；文档保留供其他模型排查 cache crash 参考。
+> 文末 benchmark 数据（4.5-5.3 / 6.8-7.9 t/s）为旧架构形态，当前性能见 [deepseek-v2-lite-q2k-benchmark.md](deepseek-v2-lite-q2k-benchmark.md) 与 [qwen3.6-a3b-iq2m-benchmark.md](qwen3.6-a3b-iq2m-benchmark.md)。
+
 ## 背景
 
 Qwen3.6-35B-A3B-UD-IQ2_M 在 `GGML_CUDA_EXPERT_CACHE>0` 时崩溃（exit 134），stderr 打印：

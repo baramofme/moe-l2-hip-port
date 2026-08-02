@@ -49,6 +49,21 @@ void ggml_cuda_expert_cache_init(int device, int n_slots, size_t expert_size_byt
 // If not found, returns NULL.
 const void * ggml_cuda_expert_cache_get(const void * cpu_src);
 
+// [moe-l2 sched-cache 2026-08-02] Try to copy an expert from the cache into a
+// destination GPU buffer. Used by the scheduler input-copy path (ggml-backend.cpp)
+// so hot experts are copied D2D from the cache instead of over PCIe from CPU RAM.
+//   cache_key   - stable key (tensor-name hash ^ expert_idx), same as ggml-cuda.cu
+//   dst_gpu     - destination GPU device pointer (e.g. input_cpy->data + offset)
+//   dst_offset  - byte offset into dst_gpu (usually 0 since dst_gpu already offset)
+//   size        - bytes to copy (single expert weight slice)
+//   stream      - CUDA stream
+// Returns true on hit (data copied from cache), false on miss (caller does the
+// regular CPU→GPU copy and then stores via ggml_cuda_expert_cache_set).
+bool ggml_cuda_expert_cache_copy_if_hit(
+        const void * cache_key,
+        void * dst_gpu, size_t dst_offset,
+        size_t size, cudaStream_t stream);
+
 // Store an expert weight GPU buffer in the cache.
 //   cpu_src    - CPU pointer to the expert weight data (used as key)
 //   size       - byte size of the GPU buffer

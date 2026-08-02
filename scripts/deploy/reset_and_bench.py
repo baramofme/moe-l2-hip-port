@@ -6,6 +6,7 @@
 # ║    python3 reset_and_bench.py <password>              ║
 # ║  Edit HOST/PORT/USER before use.                     ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性部署脚本，SSH 端口已失效。
 #
 """One-shot: reset GPU, run benchmark, report results."""
 import pexpect, sys, base64, time

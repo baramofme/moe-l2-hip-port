@@ -5,6 +5,7 @@
 # ║  are hardcoded to the author's environment.          ║
 # ║  You MUST edit paths before running it.              ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性代码检查脚本，SSH 端口已失效。
 #
 import pexpect, time, sys, os
 pw = os.environ['AUTODL_PASSWORD']

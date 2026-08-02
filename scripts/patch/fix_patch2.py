@@ -5,6 +5,7 @@
 # ║  `/root/llama.cpp/...` path is hardcoded.            ║
 # ║  Adjust path and verify code context before use.    ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性补丁脚本（fix 已固化进源码）。
 #
 """Clean up duplicate A3 cache blocks in ggml-cuda.cu."""
 path = '/root/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu'

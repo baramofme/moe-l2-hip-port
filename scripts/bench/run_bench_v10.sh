@@ -6,8 +6,10 @@
 # ║  Edit MODEL_*, LLAMA_CLI, RESULTS_FILE before use.   ║
 # ╚══════════════════════════════════════════════════════╝
 #
-# MoE LRU Cache Benchmark v10 — after cache_set size threshold fix
-# Tests Qwen3.6 IQ2_M + DS-V2-Lite Q2_K, all cache levels
+# MoE host-buffer + sched-cache Benchmark v10 — 2026-08-02 架构
+# Tests Qwen3.6 IQ2_M + DS-V2-Lite Q2_K across cache levels.
+# host-buffer 形态：默认 mmap + GGML_OP_OFFLOAD_MIN_BATCH=1（专家 GPU 直算），
+# GGML_CUDA_EXPERT_CACHE 挂在 sched 拷贝层（0.25 对 DS 最优）。
 
 set -euo pipefail
 
@@ -79,8 +81,8 @@ run_test() {
     reset_cuda
     local pre_vram=$(get_vram)
 
-    # Build env
-    local env_vars="GGML_CUDA_EXPERT_CACHE=$cache_ratio"
+    # Build env — host-buffer 专家 GPU 直算（2026-08-02 架构）
+    local env_vars="GGML_OP_OFFLOAD_MIN_BATCH=1 GGML_CUDA_EXPERT_CACHE=$cache_ratio"
 
     start_vram_sampler
 
@@ -88,7 +90,7 @@ run_test() {
 
     local output
     output=$(timeout 40 env $env_vars $LLAMA_CLI -m "$model_path" \
-        $prompt_args -n $n_tokens --cpu-moe -ngl 99 -c 512 --no-warmup --single-turn \
+        $prompt_args -n $n_tokens -ngl 99 -c 512 --no-warmup --single-turn \
         2>&1) || true
 
     stop_vram_sampler
@@ -121,7 +123,7 @@ done
 echo "====== MoE LRU Cache Benchmark v10 ======" > "$RESULTS_FILE"
 echo "Date: $(date)" >> "$RESULTS_FILE"
 echo "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)" >> "$RESULTS_FILE"
-echo "Fix: cache_set skips tensors > 100 MB" >> "$RESULTS_FILE"
+echo "Arch: host-buffer (OFFLOAD_MIN_BATCH=1) + sched-cache" >> "$RESULTS_FILE"
 echo "Binary: $(stat --format='%Y' $LLAMA_CLI 2>/dev/null)" >> "$RESULTS_FILE"
 echo "" >> "$RESULTS_FILE"
 echo "Model | Type | Cache | Status | VRAM_pre | VRAM_peak | VRAM_post | Prompt_t/s | Gen_t/s" >> "$RESULTS_FILE"
@@ -131,7 +133,7 @@ echo "------|------|-------|--------|----------|-----------|-----------|--------
 echo "" >> "$RESULTS_FILE"
 echo "========== Qwen3.6-A3B IQ2_M ==========" >> "$RESULTS_FILE"
 echo "========== Qwen3.6-A3B IQ2_M ==========" >&2
-for cache in 0 0.1 0.5 1.0 2.0; do
+for cache in 0 0.25 0.5 0.75 1.0; do
     run_test "Qwen" "$MODEL_QWEN" "$cache" "short"
     run_test "Qwen" "$MODEL_QWEN" "$cache" "long"
     run_test "Qwen" "$MODEL_QWEN" "$cache" "followup"
@@ -141,7 +143,7 @@ done
 echo "" >> "$RESULTS_FILE"
 echo "========== DeepSeek-V2-Lite Q2_K ==========" >> "$RESULTS_FILE"
 echo "========== DeepSeek-V2-Lite Q2_K ==========" >&2
-for cache in 0 0.1 0.5 1.0 2.0; do
+for cache in 0 0.25 0.5 0.75 1.0; do
     run_test "DS-V2-Lite" "$MODEL_DS" "$cache" "short"
     run_test "DS-V2-Lite" "$MODEL_DS" "$cache" "long"
     run_test "DS-V2-Lite" "$MODEL_DS" "$cache" "followup"

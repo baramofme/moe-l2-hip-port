@@ -5,6 +5,7 @@
 # ║  HOST/PORT/KEY are hardcoded to the author's setup.  ║
 # ║  Edit HOST, PORT, KEY before use.                   ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性调试脚本，SSH 端口/PID 已失效。
 #
 """Monitor benchmark progress on cloud server."""
 import pexpect

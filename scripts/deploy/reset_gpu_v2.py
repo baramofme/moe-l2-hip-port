@@ -6,6 +6,7 @@
 # ║    python3 reset_gpu_v2.py <password>                 ║
 # ║  Edit HOST/PORT/USER before use.                     ║
 # ╚══════════════════════════════════════════════════════╝
+# ⚠️ DEPRECATED (2026-07-29): 一次性部署脚本，SSH 端口已失效。
 #
 """Reset GPU via cudaDeviceReset on remote server and check VRAM."""
 import pexpect, sys, base64
