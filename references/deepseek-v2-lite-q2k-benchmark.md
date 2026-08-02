@@ -160,3 +160,37 @@ A3 模式（传 `--cpu-moe`）：A3 调度开启 + **专家计算在 CPU** 上�
 2. **4 GB VRAM 即可流畅运行** — 甚至可以在大多数 4 GB 入门卡上使用 expert cache
 3. **推荐 cache 比率** — 0.5~1.0 足够，VRAM 占用仅 2.7~3.4 GB，不需要更高
 4. **后续优化方向** — 测试更多 quantization 格式（Q3_K, Q4_K）看速度 vs 精度 tradeoff
+
+---
+
+## 2026-08-02 更新：host buffer 专家 GPU 直算 + sched-cache（重大突破）
+
+> 本报告旧数据基于 `--cpu-moe`（专家 CPU 计算）形态。2026-08-02 完成架构升级——**host buffer（专家 CPU pinned 不占 VRAM）+ GGML_OP_OFFLOAD_MIN_BATCH=1 + cache 挂 sched 拷贝层**，专家走 GPU 直算，速度大幅提升。
+
+### host buffer 全模型验证（RTX 4090，同一命令只差形态）
+
+| 形态 | Prompt t/s | Gen t/s | VRAM |
+|------|-----------|---------|------|
+| CPU buffer（旧，专家 CPU 算） | 12.5 | 12.5 | 1615 MiB |
+| **host buffer（专家 CPU pinned + GPU 直算）** | **99.0** | **37.5** | **1625 MiB** |
+
+**机制**：llama-model-loader 放开 mmap→host buffer 回退（专家走 CUDA host buffer，数据在 CPU pinned 零 VRAM），sched 的 MoE 专家级拷贝优化**只拷激活专家**（每层 6 个 × 1.55MB ≈ 9.3MB 而非 64 个全拷），GPU 快路径直算。
+
+### sched-cache 档位（cache 挂 sched 拷贝层后）
+
+| cache | Prompt t/s | Gen t/s | VRAM | 崩溃 |
+|-------|-----------|---------|------|------|
+| 无 | 99.0 | 37.4 | 1625 MiB | 0 |
+| **0.25（最优）** | **308.4（+211%）** | **39.2（+5%）** | 1625 | 0 |
+| 0.5 | 308.8 | 39.4 | 2127（+502） | 0 |
+| 0.75 | 303.3 | 39.5 | 1625 | 0 |
+| 1.0 | 304.2 | 39.4 | 2165（+540） | 0 |
+
+**档位结论**：0.25 已到顶（16 slots/层覆盖全部热专家），更大档位只加 VRAM 无速度收益。
+
+### 关键结论（2026-08-02）
+
+1. **host buffer 是主要突破**：Gen 12.5 → 37.5 t/s（+200%），VRAM 从 1615 → 1625 MiB（专家不占显存）
+2. **sched-cache 锦上添花**：Prompt 99 → 308 t/s（+211%，热专家 D2D 免 PCIe），Gen 37.4 → 39.2（+5%）
+3. **推荐配置**：`GGML_OP_OFFLOAD_MIN_BATCH=1` + `GGML_CUDA_EXPERT_CACHE=0.25`（仅 DS 这类中专家高重复率模型受益）
+4. **旧结论修正**：此前"推荐 cache 0.5~1.0"已过时——host buffer 形态下 **0.25 最优**，且基础速度已 3 倍于旧形态

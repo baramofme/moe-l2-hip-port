@@ -166,3 +166,33 @@ A3 模式（传 `--cpu-moe`）：A3 调度开启 + **专家计算在 CPU** 上�
 3. **生成速度不受 cache 大小影响** — 缓存的是推理中间结果，不改变 expert compute 路径
 4. **followup 缓存命中显著提升 prompt 速度** — 从 ~8 t/s 飙升至 ~80 t/s
 5. **推荐 cache 比率** — 对 4090 建议 0.5~1.0，VRAM ~5.4~6.6 GB，balance 命中率与内存占用
+
+---
+
+## 2026-08-02 更新：host buffer 专家 GPU 直算（速度 +370%）
+
+> 本报告旧数据基于 `--cpu-moe`（专家 CPU 计算）形态。2026-08-02 架构升级后（host buffer + OFFLOAD_MIN_BATCH=1），专家走 GPU 直算，Qwen3.6-A3B 成为**当前最快的测试模型**。
+
+### host buffer 全模型验证（RTX 4090）
+
+| 形态 | Prompt t/s | Gen t/s | VRAM |
+|------|-----------|---------|------|
+| CPU buffer（旧，专家 CPU 算） | 10.0 | 10.0 | 2141 MiB |
+| **host buffer（专家 CPU pinned + GPU 直算）** | **75.8** | **46.5** | **2147 MiB** |
+
+### sched-cache 验证（cache 挂 sched 拷贝层后）
+
+| cache | Prompt t/s | Gen t/s | VRAM |
+|-------|-----------|---------|------|
+| 无 | 75.8 | 46.5 | 2147 MiB |
+| 0.25 | 76.0 | 46.6 | 2147 MiB |
+| 0.5 | 75.6 | 46.5 | 2475 MiB |
+
+**Qwen 上 cache 无收益**（46.5-46.6 持平）——专家太小（~1MB）+ 短 prompt 搬运本来就少，cache 只加 VRAM。
+
+### 关键结论（2026-08-02）
+
+1. **host buffer 让 Qwen3.6-A3B 成为最快模型**：Gen 10 → 46.5 t/s（+370%），VRAM 2147 MiB（专家不占显存）
+2. **Qwen 不需要开 cache**：专家太小，cache 无收益只加 VRAM
+3. **推荐配置**：`GGML_OP_OFFLOAD_MIN_BATCH=1`（不开 cache）——8GB 卡跑 32B MoE，46.5 t/s
+4. **三模型速度排序（host buffer 后）**：Qwen 46.5 > DS 39.2 > Mixtral 3.7 t/s
