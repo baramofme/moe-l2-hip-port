@@ -1,7 +1,7 @@
 # moe-l2：消费级显卡的 MoE 推理加速工具
 
-> 记录时间：2026-07-22（更新：2026-08-02 —— 架构修复发布闭环 PyPI 0.4.0 + Mixtral cache 边界结论）
-> 状态：Phase 1 ✅ → Phase 1.5 ✅ → Phase 2 ✅ → Phase 3（A3 GPU LRU cache 30/30 PASS ✅，加速优化待启动；cache 适用边界已确诊）
+> 记录时间：2026-07-22（更新：2026-08-02 —— 架构修复发布闭环 PyPI 0.4.0 + Mixtral cache 边界 + host buffer 专家 GPU 提速 3x）
+> 状态：Phase 1 ✅ → Phase 1.5 ✅ → Phase 2 ✅ → Phase 3（A3 GPU LRU cache 30/30 PASS ✅，加速优化进行中；host buffer 专家 GPU 直算 37.5 t/s 已验证）
 > 一句话：**让你 8GB 显卡也能跑 16GB MoE 模型的轻量调度器**
 
 ---
@@ -863,6 +863,7 @@ services:
   |  |  前置依赖：需修改 llama.cpp C++ 层，让推理引擎从 GPU LRU 缓存取专家而非每次从 RAM 搬
   |  |  ⚠️ **cache 适用边界（Mixtral 收官确诊 2026-08-02）**：cache 只在"专家真在 CPU（mmap 形态）+ 走 GPU 计算"时有价值；--no-mmap（专家全驻 GPU）下 cache 无意义且有害（a3_on 强制跳快路径 → mmid 3.1ms 慢速管线固定开销，3.7→3.4 t/s）。详见 `Mixtral-速度显存测试-20260802.md` §5
   |  |  ✅ **修 a3_on 完成（2026-08-02）**：a3_on 只在专家真在 CPU 时启用（cudaPointerGetAttributes 判断 src0->data 驻留位置，带缓存），--no-mmap 形态保持 GPU 快路径。实测：--no-mmap+cache 的 mmid 3.1ms→17µs、Gen 3.4→3.6 t/s；mmap 形态 A3 管线不变（12.5µs / 7.7 t/s）。备份：云机 /root/moe-l2-backups/a3on-fix-20260802/，本地 测试数据备份/a3on-fix-20260802/
+  |  |  🚀 **host buffer 专家 GPU 直算（2026-08-02 重大突破，已固化）**：llama-model-loader.cpp 放开 mmap→host buffer 回退（专家走 CUDA host buffer，数据在 CPU pinned 不占 VRAM）+ cli.py 加 GGML_OP_OFFLOAD_MIN_BATCH=1 → sched 的 MoE 专家级拷贝优化只拷激活专家。实测（RTX 4090）：**DS 12.5→37.5 t/s、Qwen 10→46.8 t/s、VRAM 仅 1625/2147 MiB**（专家不占显存）。这验证了"专家 CPU 驻留 + GPU 计算"架构正路，不依赖 cache。代码：llama-model-loader.cpp（去回退）+ cli.py（OFFLOAD_MIN_BATCH=1）+ 新 bundle .so 已替换 moe_l2/bin/。备份：云机 /root/moe-l2-backups/a3on-fix-20260802/，本地 测试数据备份/a3on-fix-20260802/
   |  - [ ] **llama.cpp C++ 集成** — direct mmap from L2 cache，跳过 Python 调度层中转延迟
   |  - [ ] **轻量分类器替换关键词匹配** — 当前关键词覆盖面有限，换小模型提升预测精度
   |  |  - 路线：① TF-IDF + 线性分类（sklearn，几百 KB，起步推荐）→ ② 数据够再微调小 transformer（distilbert 级）

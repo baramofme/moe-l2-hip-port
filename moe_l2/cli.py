@@ -134,7 +134,13 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
     env["LD_LIBRARY_PATH"] = (
         f"{_BUNDLE_DIR}:" + env.get("LD_LIBRARY_PATH", "")
     )
-    # mmap default: expert tensors stay in CPU RAM, GPU cuBLAS computes them on demand
+    # Force expert MUL_MAT_ID ops onto GPU even at batch=1 (single-token decode).
+    # Default GGML_OP_OFFLOAD_MIN_BATCH is 32 (ggml-cuda.cu), so decode would keep
+    # experts on CPU. With host-buffer experts (llama-model-loader moe-l2 patch),
+    # sched's MoE expert-copy optimization copies only activated experts → GPU fast
+    # path. Measured: DS 12.5→37.5 t/s, Qwen 10→46.8 t/s (RTX 4090, 2026-08-02).
+    env["GGML_OP_OFFLOAD_MIN_BATCH"] = "1"
+    # mmap default: expert tensors stay in CPU RAM (host buffer), GPU cuBLAS computes them on demand
 
     cmd = [
         str(_LLAMA_SERVER_PATH),
