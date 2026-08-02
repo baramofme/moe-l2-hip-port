@@ -22,7 +22,8 @@ from pathlib import Path
 logger = logging.getLogger("moe-l2-flywheel")
 
 DEFAULT_SAMPLE_PATH = Path.home() / ".moe-l2" / "training_samples.jsonl"
-RETRAIN_EVERY_N = 50
+# 触发重训的样本阈值：20 条（个人使用 2-3 天即可触发一次，重训秒级无感）
+RETRAIN_EVERY_N = 20
 MIN_SAMPLES_FOR_RETRAIN = 20
 
 # 种子数据源（train_classifier.py 同款）
