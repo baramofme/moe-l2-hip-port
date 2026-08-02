@@ -4,11 +4,32 @@
 
 ## Quick start
 
+**One-line install (Linux x86_64 + NVIDIA GPU):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yalun753/moe-l2/main/scripts/install.sh | bash
+```
+
+The installer checks your GPU/driver/Python, installs moe-l2 from PyPI,
+downloads the pre-built CUDA binaries, optionally downloads a demo model
+(Qwen3.6-35B-A3B, ~11.5 GB, resumable), then runs a self-check.
+
+**Manual install:**
+
 ```bash
 pip install moe-l2                   # keyword-only predictor (zero extra deps)
 pip install moe-l2[predictor]        # hybrid: keyword + semantic embedding
 moe-l2 download-bins                 # pre-built CUDA llama-server (host-buffer patched)
+moe-l2 model download --model qwen3.6-35b   # optional demo model (~11.5 GB)
 moe-l2 start --model model.gguf --gpu
+```
+
+Useful commands:
+
+```bash
+moe-l2 doctor                        # environment self-check (GPU/CUDA/Python/disk)
+moe-l2 model list                    # list downloadable models
+moe-l2 model download --model <name> # download model (resumable, via hf-mirror)
 ```
 
 Your tools (curl, Open WebUI, LangChain) connect to `localhost:11435` — no client changes needed.

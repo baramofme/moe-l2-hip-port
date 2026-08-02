@@ -14,10 +14,29 @@ English | [**中文**](README_zh.md)
 | 12 GB | 13B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 
+**一行安装（Linux x86_64 + NVIDIA 显卡）：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yalun753/moe-l2/main/scripts/install.sh | bash
+```
+
+安装脚本自动检测显卡/驱动/Python → 从 PyPI 装 moe-l2 → 下载预编译 CUDA 二进制 → 可选下载演示模型（Qwen3.6-35B-A3B，约 11.5GB，断点续传）→ 自检。
+
+**手动安装：**
+
 ```bash
 pip install moe-l2
 moe-l2 download-bins
+moe-l2 model download --model qwen3.6-35b   # 可选：下载演示模型（约 11.5GB）
 moe-l2 start --model model.gguf --gpu
+```
+
+常用命令：
+
+```bash
+moe-l2 doctor                        # 环境自检（GPU/CUDA/Python/磁盘）
+moe-l2 model list                    # 查看可下载的模型
+moe-l2 model download --model <name> # 下载模型（断点续传，走 hf-mirror）
 ```
 
 连接 `localhost:11435`，现有工具（curl、Open WebUI、LangChain）无需改配置。

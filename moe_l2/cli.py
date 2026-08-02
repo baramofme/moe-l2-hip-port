@@ -4,6 +4,9 @@ Usage:
     moe-l2 start [--model PATH] [--l2-size SIZE] [--port PORT] [--gpu]
     moe-l2 stats [--port PORT]
     moe-l2 download-bins [--release TAG]
+    moe-l2 doctor
+    moe-l2 model list
+    moe-l2 model download --model NAME [--dir DIR]
     moe-l2 --help
 """
 
@@ -46,6 +49,34 @@ _DEFAULT_BINS_TAG = "bins-v0.1.1"
 _BUNDLE_DIR = Path(__file__).resolve().parent / "bin"
 _LLAMA_SERVER_PATH = _BUNDLE_DIR / "llama-server"
 _GPU_PORT = 11436  # llama-server listens here; proxy forwards to it
+
+# Model catalog for `moe-l2 model download` (hf-mirror.com mirrors HuggingFace)
+# name -> (repo_id, [files])  — files are relative to repo root
+_MODEL_CATALOG = {
+    "qwen3.6-35b": {
+        "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+        "files": ["Qwen3.6-35B-A3B-UD-IQ2_M.gguf"],
+        "size": "~11.5 GB (IQ2_M, 35B-A3B — recommended demo)",
+    },
+    "deepseek-v2-lite": {
+        "repo": "mradermacher/DeepSeek-V2-Lite-Chat-Uncensored-GGUF",
+        "files": ["DeepSeek-V2-Lite-Chat-Uncensored.Q2_K.gguf"],
+        "size": "~6.1 GB (Q2_K, 16B MoE — smallest footprint)",
+    },
+    "qwen3-235b": {
+        "repo": "unsloth/Qwen3-235B-A22B-GGUF",
+        "files": [
+            "Q2_K/Qwen3-235B-A22B-Q2_K-00001-of-00002.gguf",
+            "Q2_K/Qwen3-235B-A22B-Q2_K-00002-of-00002.gguf",
+        ],
+        "size": "~81.7 GB (Q2_K, 235B-A22B — flagship, needs 64GB+ RAM)",
+    },
+}
+_HF_MIRROR = "https://hf-mirror.com"
+
+
+def _hf_url(repo: str, path: str) -> str:
+    return f"{_HF_MIRROR}/{repo}/resolve/main/{path}"
 
 
 def _find_gguf(path_hint: str) -> str | None:
@@ -286,6 +317,24 @@ def main():
         help=f"GitHub Release tag (default: {_DEFAULT_BINS_TAG})",
     )
 
+    # moe-l2 doctor
+    subparsers.add_parser(
+        "doctor", help="Environment self-check (GPU, CUDA, Python, disk, binaries)"
+    )
+
+    # moe-l2 model list / model download
+    model_parser = subparsers.add_parser(
+        "model", help="List / download models from hf-mirror.com"
+    )
+    model_sub = model_parser.add_subparsers(dest="model_command", help="Model sub-commands")
+    model_list_parser = model_sub.add_parser("list", help="List available models")
+    model_dl_parser = model_sub.add_parser("download", help="Download a model")
+    model_dl_parser.add_argument("--model", required=True, help="Model name (see 'moe-l2 model list')")
+    model_dl_parser.add_argument(
+        "--dir", default="~/.moe-l2/models",
+        help="Output directory (default: ~/.moe-l2/models)",
+    )
+
     # moe-l2 collect
     collect_parser = subparsers.add_parser(
         "collect", help="Collect MoE routing data → domain_expert_map.json (模式 A)"
@@ -328,6 +377,16 @@ def main():
         return cmd_stats(args)
     elif args.command == "download-bins":
         return cmd_download_bins(args)
+    elif args.command == "doctor":
+        return cmd_doctor(args)
+    elif args.command == "model":
+        if args.model_command == "list":
+            return cmd_model_list(args)
+        elif args.model_command == "download":
+            return cmd_model_download(args)
+        else:
+            print("moe-l2 model: use 'list' or 'download'. Try: moe-l2 model list")
+            return 1
     elif args.command == "collect":
         from .collect import cmd_collect
         return cmd_collect(args)
@@ -356,6 +415,171 @@ def cmd_download_bins(args):
     print(f"  target:  {_BUNDLE_DIR}")
     ok = _download_bins(args.release)
     return 0 if ok else 1
+
+
+# ────────────────────────────────────────────────────────────────
+# moe-l2 doctor — environment self-check
+# ────────────────────────────────────────────────────────────────
+def _check_nvidia() -> tuple[bool, str]:
+    """Check NVIDIA GPU + driver via nvidia-smi."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0:
+            return False, "nvidia-smi not available (no NVIDIA driver?)"
+        lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+        if not lines:
+            return False, "nvidia-smi returned no GPU"
+        return True, lines[0]
+    except FileNotFoundError:
+        return False, "nvidia-smi not found on PATH"
+    except Exception as e:
+        return False, f"nvidia-smi error: {e}"
+
+
+def _check_cuda_lib() -> tuple[bool, str]:
+    """Check libcuda.so is loadable (needed by bundled .so bundle)."""
+    import ctypes
+    try:
+        ctypes.CDLL("libcuda.so.1")
+        return True, "libcuda.so.1 found"
+    except OSError:
+        pass
+    try:
+        ctypes.CDLL("libcuda.so")
+        return True, "libcuda.so found"
+    except OSError:
+        return False, "libcuda.so not found (install NVIDIA CUDA driver)"
+
+
+def _check_python() -> tuple[bool, str]:
+    v = sys.version_info
+    if v >= (3, 10):
+        return True, f"Python {v.major}.{v.minor}.{v.micro} (>=3.10 OK)"
+    return False, f"Python {v.major}.{v.minor}.{v.micro} (need >=3.10)"
+
+
+def _check_disk(path: Path) -> tuple[bool, str]:
+    # statvfs needs an existing dir; walk up to nearest ancestor
+    p = path
+    while p and not p.exists():
+        p = p.parent
+    try:
+        st = os.statvfs(str(p))
+        free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
+        if free_gb >= 5:
+            return True, f"{free_gb:.1f} GB free (for {path})"
+        return False, f"only {free_gb:.1f} GB free (for {path}, need >=5GB)"
+    except OSError:
+        return True, f"cannot stat {path} (assuming OK)"
+
+
+def cmd_doctor(args):
+    """Run environment self-check (GPU, CUDA, Python, disk, binaries)."""
+    print(f"moe-l2 {__version__} — doctor: environment self-check")
+    print("=" * 58)
+    checks = [
+        ("Python", _check_python()),
+        ("NVIDIA GPU", _check_nvidia()),
+        ("CUDA library", _check_cuda_lib()),
+        ("Disk space", _check_disk(Path.home() / ".moe-l2")),
+        ("Bundled binaries", (
+            True, "llama-server present" if _LLAMA_SERVER_PATH.exists()
+            else "missing — run 'moe-l2 download-bins'"
+        )),
+    ]
+    ok_count = 0
+    for name, (ok, detail) in checks:
+        mark = "✅" if ok else "❌"
+        print(f"  {mark} {name:<16} {detail}")
+        ok_count += int(ok)
+
+    print("=" * 58)
+    if ok_count == len(checks):
+        print("  All checks passed. Run:")
+        print("    moe-l2 start --model <your.gguf> --gpu")
+        return 0
+    print(f"  {len(checks) - ok_count} check(s) failed — see above for fixes.")
+    return 1
+
+
+# ────────────────────────────────────────────────────────────────
+# moe-l2 model — download models from hf-mirror.com
+# ────────────────────────────────────────────────────────────────
+def _download_file(url: str, dest: Path) -> bool:
+    """Stream a file with resume support. Returns True on success."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    existing = part.stat().st_size if part.exists() else 0
+
+    headers = {"Range": f"bytes={existing}-"} if existing else {}
+    try:
+        with httpx.stream("GET", url, headers=headers, follow_redirects=True,
+                          timeout=60.0) as resp:
+            if existing and resp.status_code == 416:
+                part.rename(dest)  # already complete
+                print(f"  ✅ {dest.name} (already complete)")
+                return True
+            if resp.status_code not in (200, 206):
+                print(f"  ❌ HTTP {resp.status_code} for {url}")
+                return False
+            total = int(resp.headers.get("content-length", 0)) + existing
+            written = existing
+            mode = "ab" if existing else "wb"
+            with open(part, mode) as f:
+                for chunk in resp.iter_bytes(1024 * 1024):
+                    f.write(chunk)
+                    written += len(chunk)
+                    if total and written % (8 * 1024 * 1024) < 1024 * 1024:
+                        pct = written / total * 100
+                        print(f"\r  {dest.name}: {written/1e9:.1f}/{total/1e9:.1f} GB ({pct:.1f}%)", end="", flush=True)
+            print()
+    except Exception as e:
+        print(f"  ❌ download failed: {e}")
+        return False
+    part.rename(dest)
+    return True
+
+
+def cmd_model_list(args):
+    print(f"moe-l2 {__version__} — available models (via hf-mirror.com)")
+    print("=" * 58)
+    for name, meta in _MODEL_CATALOG.items():
+        print(f"  {name:<18} {meta['size']}")
+        print(f"    repo: {meta['repo']}")
+    print("=" * 58)
+    print("Download:  moe-l2 model download --model <name> [--dir DIR]")
+    return 0
+
+
+def cmd_model_download(args):
+    if args.model not in _MODEL_CATALOG:
+        print(f"❌ Unknown model '{args.model}'. Available:")
+        for name in _MODEL_CATALOG:
+            print(f"  - {name}")
+        return 1
+    meta = _MODEL_CATALOG[args.model]
+    out_dir = Path(args.dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"moe-l2 {__version__} — downloading {args.model} ({meta['size']})")
+    print(f"  repo: {meta['repo']}")
+    print(f"  → {out_dir}")
+    ok = True
+    for f in meta["files"]:
+        url = _hf_url(meta["repo"], f)
+        dest = out_dir / Path(f).name
+        print(f"  [{f}]")
+        if not _download_file(url, dest):
+            ok = False
+    if ok:
+        print("✅ All files downloaded.")
+        print(f"  Run: moe-l2 start --model {out_dir / Path(meta['files'][0]).name} --gpu")
+        return 0
+    print("⚠️ Some downloads failed — re-run to resume (partial files kept).")
+    return 1
 
 
 def cmd_start(args):
