@@ -15,6 +15,9 @@ from .predictor import predict, load_mapping
 from .cache import L2Cache
 from .training_flywheel import append_sample, maybe_retrain, training_stats
 
+if False:  # TYPE_CHECKING only
+    from .gate import RoutingProfiler  # noqa: F401
+
 logger = logging.getLogger("moe-l2-proxy")
 
 DEFAULT_HOST = "127.0.0.1"
@@ -35,6 +38,7 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
 
     cache: Optional[L2Cache] = None
     backend_url: str = OLLAMA_BASE  # overridden per-instance by start_proxy
+    gate: Optional["RoutingProfiler"] = None  # online gate adaptation (optional)
 
     # ── Domain prediction & preloading ──────────────────────────
 
@@ -48,6 +52,13 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
             expert_map = load_mapping()
             self.cache.preload_domain(domain, expert_map)
             logger.info("Preloaded experts for domain=%s", domain)
+
+            # 门控在线自适应（P2 ④）：请求级信号 → 预热目标域
+            if getattr(self, "gate", None) is not None:
+                try:
+                    self.gate.on_request(domain)
+                except Exception as ge:
+                    logger.warning("Gate request signal failed (non-fatal): %s", ge)
 
             # 模式 B 数据飞轮：记录真实流量样本，攒够阈值增量重训
             try:
@@ -234,6 +245,7 @@ def start_proxy(
     port: int = DEFAULT_PORT,
     cache: Optional[L2Cache] = None,
     backend_url: str = OLLAMA_BASE,
+    gate: Optional["RoutingProfiler"] = None,
 ):
     """Start the moe-l2 proxy server.
 
@@ -242,8 +254,10 @@ def start_proxy(
         port: Listen port.
         cache: Optional L2Cache instance for domain preloading.
         backend_url: Upstream inference server URL.
+        gate: Optional RoutingProfiler for online gate adaptation.
     """
     MoEL2ProxyHandler.cache = cache
+    MoEL2ProxyHandler.gate = gate
     # Patch the backend URL onto the handler
     MoEL2ProxyHandler.backend_url = backend_url
     import functools

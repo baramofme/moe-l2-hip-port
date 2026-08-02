@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -140,6 +141,9 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
     # sched's MoE expert-copy optimization copies only activated experts → GPU fast
     # path. Measured: DS 12.5→37.5 t/s, Qwen 10→46.8 t/s (RTX 4090, 2026-08-02).
     env["GGML_OP_OFFLOAD_MIN_BATCH"] = "1"
+    # 门控在线自适应（P2 ④）：输出实时路由日志（EXPERT|Lx|Ty: [...]），
+    # 由 proxy/gate 解析后动态调缓存优先级
+    env["LLAMA_EXPERT_LOG"] = "1"
     # mmap default: expert tensors stay in CPU RAM (host buffer), GPU cuBLAS computes them on demand
 
     cmd = [
@@ -160,6 +164,42 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
         stderr=subprocess.PIPE,
     )
     return proc
+
+
+class _GateReaderThread:
+    """读 llama-server stderr，把 EXPERT 路由日志喂给 RoutingProfiler。
+
+    守护线程：llama-server 退出或 proxy 停止时自动结束。
+    """
+
+    def __init__(self, proc: subprocess.Popen, gate):
+        self._proc = proc
+        self._gate = gate
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        import select as _select
+        while not self._stop:
+            try:
+                r, _, _ = _select.select([self._proc.stderr], [], [], 0.5)
+                if not r:
+                    continue
+                line = self._proc.stderr.readline()
+                if not line:
+                    break  # stderr 关闭（llama-server 退出）
+                self._gate.on_log_line(line.decode(errors="replace"))
+            except Exception:
+                break
+
+    def stop(self) -> None:
+        self._stop = True
+
+
+def _spawn_gate_reader(proc: subprocess.Popen, gate):
+    """启动门控 stderr 采集线程。"""
+    return _GateReaderThread(proc, gate)
 
 
 def _wait_for_llama_server(port: int, timeout: float = 30.0) -> bool:
@@ -389,6 +429,20 @@ def cmd_start(args):
         print(f"  backend:  127.0.0.1:{_GPU_PORT} (llama-server + CUDA + A3)")
         backend_url = f"http://127.0.0.1:{_GPU_PORT}"
 
+    # ── 门控在线自适应（P2 ④）：实时路由 → 动态调缓存优先级 ──
+    gate = None
+    gate_thread = None
+    if args.gpu and llama_proc is not None:
+        from .gate import RoutingProfiler
+        from .predictor import load_mapping
+        try:
+            gate = RoutingProfiler(cache=cache, expert_map=load_mapping())
+            gate_thread = _spawn_gate_reader(llama_proc, gate)
+            print(f"  gate:     online routing adaptation (LLAMA_EXPERT_LOG) enabled")
+        except Exception as e:
+            logger.warning("Gate init failed (non-fatal): %s", e)
+            gate = None
+
     # ── Start proxy ──
     print(f"  proxy:    127.0.0.1:{args.port} → {backend_url}")
     print()
@@ -396,10 +450,12 @@ def cmd_start(args):
     print("Press Ctrl+C to stop")
 
     try:
-        start_proxy(port=args.port, cache=cache, backend_url=backend_url)
+        start_proxy(port=args.port, cache=cache, backend_url=backend_url, gate=gate)
     except KeyboardInterrupt:
         pass
     finally:
+        if gate_thread is not None:
+            gate_thread.stop()
         if llama_proc is not None:
             logger.info("Shutting down llama-server...")
             llama_proc.terminate()
