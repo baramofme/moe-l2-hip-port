@@ -867,6 +867,7 @@ services:
   |  - [ ] **llama.cpp C++ 集成** — direct mmap from L2 cache，跳过 Python 调度层中转延迟
   |  - [ ] **轻量分类器替换关键词匹配** — 当前关键词覆盖面有限，换小模型提升预测精度
   |  |  - 路线：① TF-IDF + 线性分类（sklearn，几百 KB，起步推荐）→ ② 数据够再微调小 transformer（distilbert 级）
+  |  |  - ✅ **① 骨架完成（2026-08-02）**：train_classifier.py（TF-IDF char_wb 2-4gram + LinearSVC，111 条种子）+ moe_l2/tfidf_predictor.py + predictor.py 接入 predict_hybrid 三层兜底（关键词→TF-IDF→语义→fallback）。模型 236.7KB（domain_classifier.joblib）。5 折 CV 59.3%（样本不足，待模式 B 数据飞轮增量重训）
   |  |  - 训练集：collect 8 域种子数据（冷启动）+ 模式 B 真实流量（增量投喂，数据飞轮）
   |  |  - 门控信息与分类器互补：分类器管冷启动（prompt→领域），门控管热循环（推理中→换专家）
   |  - [x] **领域→专家映射收集（取代纯 GGUF 嵌入）** — 固定位置 `~/.moe-l2/maps/<model_id>/`；模式 A 已实现（`moe-l2 collect --model xxx`，含兼容性检测，DS 实测通过）；**模式 B 边用边收集未实现**（proxy 增量积累路由数据，后台定期重算，L0a 越用越聪明）；GGUF 嵌入作可选发布形态
