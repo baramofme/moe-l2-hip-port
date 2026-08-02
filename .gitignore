@@ -34,3 +34,6 @@ Thumbs.db
 
 # Environment
 .env
+
+# Local-only docs — 历史记录文档只在本地，不进 GitHub
+历史记录文档/
