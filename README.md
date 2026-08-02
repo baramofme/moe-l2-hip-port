@@ -32,7 +32,7 @@ user → moe-l2 proxy (localhost:11435)
 | 12 GB | 13B dense | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ✅ |
 
-Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.7 GB VRAM (cache=0.5 on DS-V2-Lite).
+Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.1 GB VRAM (host-buffer experts on Qwen3.6-A3B, GPU compute).
 
 ### Benchmarked on RTX 4090 (2026-08-02, host-buffer GPU fast path)
 
@@ -40,9 +40,9 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 |------|----------|-----------|---------------|
 | Standard (all experts on GPU) | 23.3 GB | 65 t/s | Needs a 24 GB card |
 | **moe-l2** (host-buffer experts, GPU compute) | **1.6 GB** | **DS 37.5 t/s · Qwen 46.8 t/s** | **Fits in 4-8 GB cards** |
-| **Savings** | **93% less** | ~40% of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
+| **Savings** | **93% less** | ~58% of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
 
-> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with the host-buffer build: experts live in CPU pinned memory (zero VRAM), the scheduler copies only the **activated** experts to GPU each step. DS-V2-Lite **12.5 → 37.5 t/s** (+200%), Qwen3.6-A3B **10 → 46.8 t/s** (+370%), VRAM unchanged at 1.6 / 2.1 GB. Full report: `历史记录文档/lru-cache-档位对比测试-20260801.md`
+> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with the host-buffer build: experts live in CPU pinned memory (zero VRAM), the scheduler copies only the **activated** experts to GPU each step. DS-V2-Lite **12.5 → 37.5 t/s** (+200%), Qwen3.6-A3B **10 → 46.8 t/s** (+370%), VRAM unchanged at 1.6 / 2.1 GB. Adding the sched-cache layer pushes DS prompt processing **99 → 308 t/s** (+211%) at cache=0.25, VRAM still 1.6 GB. Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md)
 
 ## Usage
 
@@ -170,13 +170,13 @@ Options:
 
 | Metric | Standard | With moe-l2 |
 |--------|----------|-------------|
-| Prompt processing | 110 t/s | ~100 t/s |
-| Generation speed (DS-V2-Lite) | 65 t/s | 37.5 t/s |
+| Prompt processing (DS-V2-Lite) | 110 t/s | 99 t/s · **308 t/s** (sched-cache=0.25) |
+| Generation speed (DS-V2-Lite) | 65 t/s | 37.5 t/s · 39.2 t/s (sched-cache=0.25) |
 | Generation speed (Qwen3.6-A3B) | — | 46.8 t/s |
 | VRAM used (DS-V2-Lite) | 23.3 GB | **1.6 GB** |
 | Model size / VRAM ratio | 0.26× | **3.9×** |
 
-The speed tradeoff is intentional and small: experts live in CPU pinned memory (host buffer, zero VRAM), and the scheduler copies only activated experts to GPU per step. On the 2026-08-02 host-buffer build, DS-V2-Lite reaches 37.5 t/s gen at 1.6 GB VRAM — ~40% of full-GPU speed at <7% of the VRAM.
+The speed tradeoff is intentional and small: experts live in CPU pinned memory (host buffer, zero VRAM), and the scheduler copies only activated experts to GPU per step. On the 2026-08-02 host-buffer build, DS-V2-Lite reaches 37.5 t/s gen at 1.6 GB VRAM — ~58% of full-GPU speed at <7% of the VRAM.
 
 ## Expert Cache & host-buffer fast path (llama.cpp)
 

@@ -5,7 +5,7 @@ English | [**中文**](README_zh.md)
 [![PyPI version](https://img.shields.io/pypi/v/moe-l2)](https://pypi.org/project/moe-l2/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
 
-**8GB 显卡也能跑 32B MoE 大模型 — 省 91% 显存，一行 pip 搞定。**
+**8GB 显卡也能跑 32B MoE 大模型 — 省 93% 显存，一行 pip 搞定。**
 
 | 你的显卡 | 正常能跑 | **用了 moe-l2** |
 |----------|---------|-----------------|
@@ -32,17 +32,17 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 ### 实测数据
 
-基于 **DeepSeek-V2-Lite**（160 亿参数，64 expert，top-6，Q2_K 量化）：
+基于 **RTX 4090** 实测（2026-08-02，host-buffer 专家 GPU 直算）：
 
 | 模式 | GPU 显存 | 速度 | 意味着什么 |
 |------|----------|------|-----------|
 | 标准（全 expert 在 GPU） | 23.3 GB | 65 t/s | 需要 24 GB 显卡 |
-| **moe-l2**（热缓存 expert） | **2.7 GB** | **~7 t/s** 生成 · **103 t/s** prompt | **4 GB 卡也能跑** |
-| **节省** | **88% 显存** | 速度的 11% | 腾出 ~20 GB 做别的 |
+| **moe-l2**（host-buffer 专家，GPU 计算） | **1.6 GB** | **DS 37.5 t/s · Qwen 46.8 t/s** | **4 GB 卡也能跑** |
+| **节省** | **93% 显存** | 全 GPU 速度的 ~58% | 腾出 ~20 GB 做别的 |
 
-不开 moe-l2，8 GB 显卡**根本无法加载这个模型**——直接 OOM。开了之后只用 2.7 GB（cache=0.5），还剩 5.3 GB 干别的。
+不开 moe-l2，8 GB 显卡**根本无法加载这个模型**——直接 OOM。开了之后 32B MoE 只占 ~2.1 GB（host-buffer 专家，GPU 计算），还剩 6 GB 干别的。
 
-> 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试。GPU LRU expert 缓存（Phase 3）现已 **稳定运行**——7 种缓存级别 × 3 种对话类型全部通过，0 崩溃。生成速度 ~5-7 t/s（受 CPU expert compute 瓶颈限制），但 followup 对话的 prompt 处理因缓存命中提速 **10 倍**（~80-103 t/s）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md)
+> 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试。host-buffer 升级后：专家驻留 CPU pinned 内存（零显存），调度器每步只把**激活的专家**拷到 GPU 直算。DS-V2-Lite **12.5 → 37.5 t/s**（+200%），Qwen3.6-A3B **10 → 46.8 t/s**（+370%）。加上 sched-cache 层后 DS prompt 处理 **99 → 308 t/s**（+211%，cache=0.25，VRAM 仍 1.6 GB）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer](references/cache-sched-layer-benchmark.md)
 
 ---
 
@@ -126,7 +126,7 @@ moe-l2 download-bins
 moe-l2 start --model /path/to/model.gguf --l2-size 4GB
 ```
 
-**GPU 模式**（A3 补丁版 llama-server，省 91% 显存）：
+**GPU 模式**（A3 补丁版 llama-server，省 93% 显存）：
 ```bash
 moe-l2 start --model /path/to/model.gguf --l2-size 4GB --gpu
 ```
@@ -186,12 +186,13 @@ moe-l2 stats
 
 | 指标 | 标准 | moe-l2 |
 |------|------|--------|
-| Prompt 处理 | 110 t/s | 110 t/s |
-| 生成速度 | 65 t/s | ~5-7 t/s |
-| 显存占用 | 23.3 GB | 2.7 GB |
-| 模型大小 / 显存比 | 0.26× | **2.2×** |
+| Prompt 处理（DS-V2-Lite） | 110 t/s | 99 t/s · **308 t/s**（sched-cache=0.25） |
+| 生成速度（DS-V2-Lite） | 65 t/s | 37.5 t/s · 39.2 t/s（sched-cache=0.25） |
+| 生成速度（Qwen3.6-A3B） | — | 46.8 t/s |
+| 显存占用 | 23.3 GB | **1.6 GB** |
+| 模型大小 / 显存比 | 0.26× | **3.9×** |
 
-速度取舍是可预期的：expert 通过 PCIe 从系统内存加载。Phase 3 GPU LRU 缓存稳定运行，生成速度受 CPU expert compute 瓶颈限制（~5-7 t/s），但 followup prompt 处理因缓存命中提升至 ~80-103 t/s。
+速度取舍是可预期的：专家驻留 CPU pinned 内存（host buffer，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-02 升级后 DS-V2-Lite 生成 37.5 t/s（+200%）、Qwen3.6-A3B 46.8 t/s（+370%）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%）。
 
 ---
 
