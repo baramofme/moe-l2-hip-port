@@ -63,6 +63,20 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 > 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试。host-buffer 升级后：专家驻留 CPU pinned 内存（零显存），调度器每步只把**激活的专家**拷到 GPU 直算。DS-V2-Lite **12.5 → 37.5 t/s**（+200%），Qwen3.6-A3B **10 → 46.8 t/s**（+370%）。加上 sched-cache 层后 DS prompt 处理 **99 → 308 t/s**（+211%，cache=0.25，VRAM 仍 1.6 GB）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer](references/cache-sched-layer-benchmark.md)
 
+### 可视化演示（RTX 4090，2026-08-02）
+
+| Qwen3.6-35B-A3B（32B MoE）— 标准 vs moe-l2 | DeepSeek-V2-Lite（16B MoE）— 8GB 卡 vs 24GB 卡 |
+|---|---|
+| ![Qwen 显存对比](examples/demo-assets/fig1-qwen-vram.png) | ![DS 显存对比](examples/demo-assets/fig2-ds-vram.png) |
+
+一句话总结：**显存省 93% · 速度保留 58% · 模型/显存比 3.9×** —— 8 GB 卡跑出原本 24 GB 卡的效果：
+
+![moe-l2 汇总](examples/demo-assets/fig3-summary.png)
+
+实机录屏：Qwen3.6-35B-A3B 生成 **3200 tokens，全程显存钉在 ~2.4 GB**（41.6 t/s）—— 曲线全程平直，远低于 8 GB 红线：
+
+[`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4)（45 秒，1280×720）· 原始采样：[`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · 生成全文：[`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
+
 ---
 
 ## 系统架构

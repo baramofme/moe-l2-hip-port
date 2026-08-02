@@ -67,6 +67,20 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 > We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with the host-buffer build: experts live in CPU pinned memory (zero VRAM), the scheduler copies only the **activated** experts to GPU each step. DS-V2-Lite **12.5 → 37.5 t/s** (+200%), Qwen3.6-A3B **10 → 46.8 t/s** (+370%), VRAM unchanged at 1.6 / 2.1 GB. Adding the sched-cache layer pushes DS prompt processing **99 → 308 t/s** (+211%) at cache=0.25, VRAM still 1.6 GB. Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md)
 
+### Visual demo (RTX 4090, 2026-08-02)
+
+| Qwen3.6-35B-A3B (32B MoE) — standard vs moe-l2 | DeepSeek-V2-Lite (16B MoE) — 8 GB card vs 24 GB card |
+|---|---|
+| ![Qwen VRAM comparison](examples/demo-assets/fig1-qwen-vram.png) | ![DS VRAM comparison](examples/demo-assets/fig2-ds-vram.png) |
+
+Summary: **93% less VRAM · 58% of full-GPU speed · 3.9× model-per-GB ratio** — an 8 GB card runs what used to need 24 GB:
+
+![moe-l2 summary](examples/demo-assets/fig3-summary.png)
+
+Live capture: Qwen3.6-35B-A3B generating **3,200 tokens with VRAM pinned at ~2.4 GB** (41.6 t/s) — watch the VRAM curve stay flat below the 8 GB line the whole run:
+
+[`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4) (45 s, 1280×720) · raw telemetry: [`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · full generated text: [`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
+
 ## Usage
 
 ### 1. L2 proxy with GPU host-buffer (recommended)
