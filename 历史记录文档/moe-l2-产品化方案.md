@@ -851,7 +851,7 @@ services:
   |  |  - Qwen3.6: VRAM 7.6→2.2 GiB（-71%）, Gen 6.3 t/s（env var）
   |  |  - H2D pipeline 验证：❌ 无提升（expert 太小，无法 overlap）
   |  |  - 8 域 × 3 阶段全 benchmark 完成: DS-V2-Lite 24/24 ✅, Qwen3.6 24/24 ✅
-  |  |  - [x] moe-l2 PyPI 发布 ✅ — `pip install moe-l2` v0.3.0，66KB 源码包；**v0.4.0（2026-08-02）已重发：collect 新功能 + setuptools>=77（metadata 2.4）**
+  |  |  - [x] moe-l2 PyPI 发布 ✅ — `pip install moe-l2` v0.3.0，66KB 源码包；**v0.4.0（2026-08-02）重发：collect 新功能 + setuptools>=77（metadata 2.4）；v0.5.0（2026-08-02）发布：host-buffer GPU fast path（commit a4314ca，二进制走 GitHub Release bins-v0.1.1）**
   |  - [x] 公开仓库创建 ✅ — `yalun753/moe-l2`（README-only，指向 PyPI）
   |  - [x] **cli.py 架构修复 ✅（2026-07-30 发现，2026-08-01 确认落地，2026-08-02 发布闭环）** — 已删 `--no-mmap`+`FORCE_CPU_EXPERTS` 两个相反参数（cli.py 2 处）、proxy /v1/ 透传 + 错误消息（proxy.py 2 处）、gguf_reader `_first_expert_layer()`（1 处）、collect 子命令（1 处），共 6 处；本地已改、云机全链路实测通过；**已闭环：commit e432e39 + PyPI 0.4.0 重发**
   |  - [x] **做法G（per-layer subgraph）❌ 已放弃（2026-07-30）** — 7 个子方向全部失败，ggml-alloc DAG 假设与跨子图 tensor 共享不兼容
