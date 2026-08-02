@@ -1,5 +1,7 @@
 # moe-l2 Demos
 
+> ⚠️ **先改路径再跑**：`demo_a3_compression.sh` 顶部写死的 `MODEL` 和 `LLAMA_CLI` 是作者的云机路径（`/root/autodl-tmp/...`），直接运行会报错退出。**使用前必须改成你自己的模型路径和 llama 二进制路径**（见下方「怎么跑」）。
+
 | Demo | What it shows | Run it |
 |------|--------------|--------|
 | [demo_a3_compression.sh](demo_a3_compression.sh) | OG vs host-buffer vs sched-cache VRAM/速度对比 | `bash examples/demo_a3_compression.sh` |
@@ -26,7 +28,7 @@
 #   2. DeepSeek-V2-Lite 或类似 MoE 的 GGUF 模型
 #   3. NVIDIA GPU + CUDA
 
-# 修改脚本顶部的 MODEL 和 LLAMA_CLI 路径
+# 修改脚本顶部的 MODEL 和 LLAMA_CLI 路径（默认是云机路径，必须改成你自己的）
 vim examples/demo_a3_compression.sh
 
 # 运行
