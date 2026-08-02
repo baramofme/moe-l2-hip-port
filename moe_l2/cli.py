@@ -258,6 +258,15 @@ def main():
     collect_parser.add_argument("--tokens", type=int, default=20, help="Gen tokens per prompt (default: 20)")
     collect_parser.add_argument("--timeout", type=int, default=300, help="Per-prompt timeout (default: 300)")
 
+    # moe-l2 embed-map
+    embed_parser = subparsers.add_parser(
+        "embed-map", help="Embed domain_expert_map.json into a GGUF model (发布形态)"
+    )
+    embed_parser.add_argument("--model", required=True, help="Path to GGUF model file")
+    embed_parser.add_argument("--map", default=None, help="Path to domain_expert_map.json (default: bundled)")
+    embed_parser.add_argument("--output", required=True, help="Output GGUF file path")
+    embed_parser.add_argument("--keep-original", action="store_true", help="Keep source model (default: delete on success)")
+
     # moe-l2 version
     subparsers.add_parser(
         "version", help="Show version (alternative to --version)"
@@ -282,6 +291,17 @@ def main():
     elif args.command == "collect":
         from .collect import cmd_collect
         return cmd_collect(args)
+    elif args.command == "embed-map":
+        from .gguf_embed import embed_map
+        import os as _os
+        map_path = args.map or _os.path.join(
+            _os.path.dirname(__file__), "data", "domain_expert_map.json"
+        )
+        out = embed_map(
+            args.model, map_path, args.output, keep_original=args.keep_original
+        )
+        print(f"✅ Embedded domain map → {out}")
+        return 0
     elif args.command == "version":
         print(f"moe-l2 {__version__}")
         return 0

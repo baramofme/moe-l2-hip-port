@@ -301,6 +301,19 @@ def load_mapping(path: Optional[str] = None) -> dict:
         return json.load(f)
 
 
+def load_embedded_mapping(model_path: str) -> dict | None:
+    """从 GGUF 模型文件读取内嵌的 domain_expert_map（可选发布形态）。
+
+    模型内嵌了映射（moe-l2 embed-map）时优先使用；没有则返回 None，
+    调用方回退到 load_mapping()。
+    """
+    try:
+        from .gguf_embed import read_embedded_map
+        return read_embedded_map(model_path)
+    except Exception:
+        return None
+
+
 def _get_map() -> dict:
     global _DOMAIN_MAP
     if _DOMAIN_MAP is None:
