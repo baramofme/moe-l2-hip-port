@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # ============================================================
-# MoE A3 (Attention-Aware Expert Cache) VRAM Compression Demo
+# MoE host-buffer VRAM Compression Demo
 #
-# Demonstrates the same MoE model running in two modes:
-#   1. OG mode  — full model on GPU (--no-mmap, no cache)
-#   2. A3 mode  — expert cache + CPU MoE (--expert-cache 0.25)
+# Demonstrates the same MoE model running in three modes:
+#   1. OG mode     — full model on GPU (--no-mmap, no cache)
+#   2. moe-l2 mode — host-buffer experts + GPU compute
+#                    (default mmap + GGML_OP_OFFLOAD_MIN_BATCH=1)
+#   3. cache mode  — mode 2 + sched-cache (GGML_CUDA_EXPERT_CACHE=0.25)
+#
+# 2026-08-02 architecture: experts live in CPU pinned memory
+# (CUDA host buffer, zero VRAM), the scheduler copies ONLY the
+# activated experts to GPU each step, GPU computes them on the
+# fast path. sched-cache keeps hot experts on GPU (D2D, no PCIe).
 #
 # Edit MODEL and LLAMA_CLI paths below before running.
 # ============================================================
@@ -14,6 +21,7 @@ set -uo pipefail
 MODEL="/root/autodl-tmp/DeepSeek-V2-Lite-Chat-Uncensored.Q2_K.gguf"
 LLAMA_CLI="/root/autodl-tmp/build-a3/bin/llama-batched"
 N_GPU_LAYERS=99            # offload all layers to GPU
+CACHE_RATIO=0.25           # sched-cache ratio (DS: 0.25 optimal)
 
 PROMPT="Explain the difference between Mixture of Experts (MoE) and dense transformer models. Focus on inference memory usage."
 
@@ -22,7 +30,7 @@ if [ ! -f "$MODEL" ]; then echo "ERROR: model not found at $MODEL"; exit 1; fi
 if [ ! -x "$LLAMA_CLI" ]; then echo "ERROR: llama-batched not found at $LLAMA_CLI"; exit 1; fi
 
 echo "=============================================="
-echo "  MoE A3 VRAM Compression Demo"
+echo "  MoE host-buffer VRAM Compression Demo"
 echo "=============================================="
 echo "Model : $(basename $MODEL)"
 echo "Binary: $(basename $LLAMA_CLI)"
@@ -36,7 +44,7 @@ gpu_mem() {
 }
 
 run_test() {
-    local mode_label="$1" mode="$2" extra_args="$3" outfile="$4"
+    local mode_label="$1" mode="$2" env_args="$3" extra_args="$4" outfile="$5"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  $mode_label"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -52,7 +60,7 @@ run_test() {
 
     # Run inference (foreground) — monitor will capture peak VRAM during run
     echo "  [running inference + VRAM monitor...]"
-    $LLAMA_CLI \
+    env $env_args $LLAMA_CLI \
         -m "$MODEL" \
         -p "$PROMPT" \
         -n 128 \
@@ -100,36 +108,55 @@ run_test() {
 run_test \
     "MODE 1: OG — Full model on GPU" \
     "OG" \
+    "" \
     "--no-mmap" \
     "/tmp/og_output.txt"
 
 sleep 2
 
-# ============ MODE 2: A3 (expert cache) ============
+# ============ MODE 2: moe-l2 host-buffer ============
 run_test \
-    "MODE 2: A3 — Expert Cache (0.25) + CPU MoE" \
-    "A3" \
-    "--cpu-moe --expert-cache 0.25" \
-    "/tmp/a3_output.txt"
+    "MODE 2: moe-l2 — host-buffer experts + GPU compute" \
+    "HB" \
+    "GGML_OP_OFFLOAD_MIN_BATCH=1" \
+    "" \
+    "/tmp/hb_output.txt"
+
+sleep 2
+
+# ============ MODE 3: host-buffer + sched-cache ============
+run_test \
+    "MODE 3: cache — host-buffer + sched-cache (${CACHE_RATIO})" \
+    "CACHE" \
+    "GGML_OP_OFFLOAD_MIN_BATCH=1 GGML_CUDA_EXPERT_CACHE=${CACHE_RATIO}" \
+    "" \
+    "/tmp/cache_output.txt"
 
 # ============ RESULTS ============
 echo "=============================================="
 echo "  RESULTS SUMMARY"
 echo "=============================================="
 echo ""
-printf "  %-12s  %20s  %20s\n" "" "OG (full GPU)" "A3 (expert cache)"
-printf "  %-12s  %20s  %20s\n" "────────────" "────────────────────" "────────────────────"
-printf "  %-12s  %20s  %20s\n" "VRAM used" "${OG_MEM:-N/A} MB" "${A3_MEM:-N/A} MB"
-printf "  %-12s  %20s  %20s\n" "Speed" "${OG_TPS:-N/A} t/s" "${A3_TPS:-N/A} t/s"
+printf "  %-12s  %20s  %20s  %20s\n" "" "OG (full GPU)" "host-buffer" "host-buffer+cache"
+printf "  %-12s  %20s  %20s  %20s\n" "────────────" "────────────────────" "────────────────────" "────────────────────"
+printf "  %-12s  %20s  %20s  %20s\n" "VRAM used" "${OG_MEM:-N/A} MB" "${HB_MEM:-N/A} MB" "${CACHE_MEM:-N/A} MB"
+printf "  %-12s  %20s  %20s  %20s\n" "Speed" "${OG_TPS:-N/A} t/s" "${HB_TPS:-N/A} t/s" "${CACHE_TPS:-N/A} t/s"
 
-if [ -n "${A3_MEM:-}" ] && [ "${A3_MEM:-0}" -gt 0 ] && [ -n "${OG_MEM:-}" ] && [ "${OG_MEM:-0}" -gt 0 ]; then
-    COMPRESSION=$(echo "scale=2; $OG_MEM / $A3_MEM" | bc -l 2>/dev/null || echo "N/A")
-    SAVING=$(( OG_MEM - A3_MEM ))
-    printf "  %-12s  %20s  %20s\n" "Savings" "-" "${SAVING} MB (${COMPRESSION}x)"
+if [ -n "${HB_MEM:-}" ] && [ "${HB_MEM:-0}" -gt 0 ] && [ -n "${OG_MEM:-}" ] && [ "${OG_MEM:-0}" -gt 0 ]; then
+    COMPRESSION=$(echo "scale=2; $OG_MEM / $HB_MEM" | bc -l 2>/dev/null || echo "N/A")
+    SAVING=$(( OG_MEM - HB_MEM ))
+    printf "  %-12s  %20s  %20s  %20s\n" "Savings" "-" "${SAVING} MB (${COMPRESSION}x)" "-"
 fi
 echo ""
-echo "  OG mode:  --no-mmap loads full model weights to GPU."
-echo "  A3 mode:  --cpu-moe keeps MoE weights in CPU RAM;"
-echo "            --expert-cache 0.25 caches 25% of experts on GPU."
-echo "            Inactive experts are swapped in from CPU on demand."
+echo "  OG mode:    --no-mmap loads full model weights to GPU."
+echo "  moe-l2:     default mmap + GGML_OP_OFFLOAD_MIN_BATCH=1:"
+echo "              experts live in CPU pinned memory (zero VRAM),"
+echo "              scheduler copies only activated experts to GPU."
+echo "  cache mode: + GGML_CUDA_EXPERT_CACHE=0.25 keeps hot experts"
+echo "              on GPU (D2D copy, no PCIe) — DS prompt +211%."
+echo ""
+echo "  Reference (RTX 4090, DS-V2-Lite Q2_K, 2026-08-02):"
+echo "    OG  23.3 GB  65 t/s"
+echo "    HB  1.6 GB  37.5 t/s gen (99 prompt)"
+echo "    cache 1.6 GB 39.2 t/s gen (308 prompt, +211%)"
 echo "=============================================="
