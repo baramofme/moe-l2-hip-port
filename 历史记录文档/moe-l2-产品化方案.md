@@ -874,6 +874,7 @@ services:
   |  - [x] **领域→专家映射收集（取代纯 GGUF 嵌入）** — 固定位置 `~/.moe-l2/maps/<model_id>/`；模式 A 已实现（`moe-l2 collect --model xxx`，含兼容性检测，DS 实测通过）；**模式 B 边用边收集未实现**（proxy 增量积累路由数据，后台定期重算，L0a 越用越聪明）；GGUF 嵌入作可选发布形态
   |  - [ ] **模式 B 边用边收集** — proxy 捕获 llama-server 路由日志增量积累，后台定期重算映射更新固定位置
   |  |  - ✅ **数据飞轮完成（2026-08-02）**：moe_l2/training_flywheel.py（append_sample → ~/.moe-l2/training_samples.jsonl → maybe_retrain 攒够 50 条自动重训原子替换 joblib）+ proxy.py 接入（_predict_and_preload 收集样本 + /stats 飞轮状态）。实测：种子 59.3% → 种子+每域5条样本 78.1%（+18.8pp，CV 波动 ±12.5→±5.5）——越用越准验证成立
+  |  |  - ✅ **门控在线自适应完成（2026-08-02）**：moe_l2/gate.py（RoutingProfiler：解析 LLAMA_EXPERT_LOG 路由行→会话画像→漂移检测→高频专家抬 MRU）+ proxy on_request 预热 + cli LLAMA_EXPERT_LOG=1 + stderr 采集线程。与分类器互补：分类器管冷启动（prompt→领域），门控管热循环（推理中→换专家）
   |  |  - **数据飞轮**：模式 B 攒的真实流量（真实 prompt + 真实专家激活）→ 增量投喂轻量分类器训练集（冷启动用 collect 8 域种子，运行期用模式 B 真实数据）
   |  |  - **门控在线自适应**：推理中读 LLAMA_EXPERT_LOG 实时路由，动态调缓存优先级（LRU 智能增强）；按会话累积路由画像
   |  |  - 实施顺序：① 先做轻量分类器骨架（collect 种子训第一版）→ ② 再上模式 B 增量重训（不然光攒数据没有消费方，飞轮转不起来）
