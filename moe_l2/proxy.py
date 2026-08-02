@@ -13,6 +13,7 @@ import httpx
 
 from .predictor import predict, load_mapping
 from .cache import L2Cache
+from .training_flywheel import append_sample, maybe_retrain, training_stats
 
 logger = logging.getLogger("moe-l2-proxy")
 
@@ -38,7 +39,7 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
     # ── Domain prediction & preloading ──────────────────────────
 
     def _predict_and_preload(self, text: str):
-        """Predict domain and trigger expert preload."""
+        """Predict domain and trigger expert preload + flywheel sampling."""
         if not self.cache:
             return
         try:
@@ -47,6 +48,13 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
             expert_map = load_mapping()
             self.cache.preload_domain(domain, expert_map)
             logger.info("Preloaded experts for domain=%s", domain)
+
+            # 模式 B 数据飞轮：记录真实流量样本，攒够阈值增量重训
+            try:
+                append_sample(text, domain)
+                maybe_retrain()
+            except Exception as fe:
+                logger.warning("Flywheel sampling failed (non-fatal): %s", fe)
         except Exception as e:
             # Non-fatal: forwarding still happens even if preload fails
             logger.warning("Preload failed: %s", e)
@@ -210,6 +218,8 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
             return
         try:
             stats = self.cache.stats()
+            # 模式 B 数据飞轮状态
+            stats.update(training_stats())
             # Return compact version for CLI consumption
             self._send_json(stats)
         except Exception as e:
