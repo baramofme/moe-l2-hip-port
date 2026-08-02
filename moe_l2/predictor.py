@@ -28,6 +28,8 @@ __all__ = [
     "get_layer_specificity",
     "load_mapping",
     "is_semantic_available",
+    "is_tfidf_available",
+    "enable_tfidf",
 ]
 
 # ── Default domain list — matches the 8 tested domains ──
@@ -219,6 +221,13 @@ _DOMAIN_MAP: dict | None = None
 # ── Semantic predictor (optional) ──
 _SEMANTIC_PREDICTOR: Optional["SemanticPredictor"] = None
 
+# ── TF-IDF classifier (optional, P2 ①) ──
+_TFIDF_PREDICTOR: Optional["TfidfPredictor"] = None
+
+if False:  # TYPE_CHECKING only — avoids runtime import of optional deps
+    from .semantic_predictor import SemanticPredictor  # noqa: F401
+    from .tfidf_predictor import TfidfPredictor  # noqa: F401
+
 
 def is_semantic_available() -> bool:
     """Check if the optional semantic predictor is available."""
@@ -226,6 +235,34 @@ def is_semantic_available() -> bool:
         from .semantic_predictor import SemanticPredictor  # noqa: F401
         return True
     except ImportError:
+        return False
+
+
+def is_tfidf_available() -> bool:
+    """Check if the trained TF-IDF classifier artifact exists."""
+    try:
+        from .tfidf_predictor import is_tfidf_available as _check
+        return _check()
+    except ImportError:
+        return False
+
+
+def enable_tfidf() -> bool:
+    """Load the TF-IDF classifier (lazy, requires scikit-learn + trained model).
+
+    Returns True if loaded successfully, False if unavailable
+    (sklearn missing or domain_classifier.joblib absent) — callers fall back
+    to keyword / semantic prediction.
+    """
+    global _TFIDF_PREDICTOR
+    if _TFIDF_PREDICTOR is not None:
+        return True
+    try:
+        from .tfidf_predictor import TfidfPredictor
+        _TFIDF_PREDICTOR = TfidfPredictor()
+        return True
+    except Exception:
+        _TFIDF_PREDICTOR = None
         return False
 
 
@@ -314,13 +351,16 @@ def predict(prompt: str, fallback: str = "general_qa") -> str:
 def predict_hybrid(
     prompt: str,
     fallback: str = "general_qa",
+    tfidf_threshold: float = 0.0,
 ) -> str:
-    """Predict domain using keyword matching + semantic embedding fallback.
+    """Predict domain using keyword matching + TF-IDF classifier + semantic embedding fallback.
 
-    Two-tier prediction:
+    Three-tier prediction:
       1. Fast path: keyword matching (same as predict()).
-      2. Semantic fallback: if keyword returns fallback AND semantic
-         predictor is enabled AND its confidence > threshold, override.
+      2. TF-IDF classifier (P2 ①, ~1-3ms): only when keywords miss AND
+         tfidf_threshold=0 (always override) or the linear margin is confident.
+      3. Semantic fallback: only when keyword + TF-IDF both miss AND semantic
+         predictor is enabled AND its confidence > threshold.
 
     The semantic predictor uses all-MiniLM-L6-v2 (~80MB) and runs
     ~10-30ms on CPU. It requires `sentence-transformers` installed.
@@ -328,17 +368,19 @@ def predict_hybrid(
     Args:
         prompt: User input text.
         fallback: Domain label when nothing matches.
-        semantic_threshold: Min confidence (0-1) for semantic override.
-            Lower = more aggressive override, higher = more conservative.
-            Default 0.35 based on prototype testing.
-
-    Returns:
-        Predicted domain label.
+        tfidf_threshold: Min decision margin for TF-IDF override (default 0 = always).
     """
     # Fast path: keyword matching
     result = predict(prompt, fallback=fallback)
     if result != fallback:
         return result  # keyword already classified it
+
+    # TF-IDF classifier (P2 ①): trained on collect seed data, zero-download.
+    # Only overrides when the linear margin is confident enough.
+    if _TFIDF_PREDICTOR is not None:
+        tfidf_result = _TFIDF_PREDICTOR.predict(prompt, confidence_threshold=tfidf_threshold)
+        if tfidf_result is not None:
+            return tfidf_result
 
     # Slow path: semantic fallback
     if _SEMANTIC_PREDICTOR is None:
