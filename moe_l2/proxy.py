@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from .predictor import predict, load_mapping
+from .predictor import predict_hybrid, load_mapping, enable_tfidf
 from .cache import L2Cache
 from .training_flywheel import append_sample, maybe_retrain, training_stats
 
@@ -47,7 +47,9 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
         if not self.cache:
             return
         try:
-            domain = predict(text)
+            # 三层预测：关键词 → TF-IDF 分类器 → 语义兜底（提升样本标签质量）
+            enable_tfidf()  # 惰性加载，缺 sklearn 时静默降级
+            domain = predict_hybrid(text)
             logger.info("Predicted domain: %s", domain)
             expert_map = load_mapping()
             self.cache.preload_domain(domain, expert_map)
@@ -109,7 +111,13 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
     # ── API handlers ────────────────────────────────────────────
 
     def _handle_api(self, endpoint: str, body: bytes):
-        """Handle /api/generate or /api/chat — predict, preload, forward."""
+        """Handle /api/generate or /api/chat — predict, preload, forward.
+
+        Backend endpoint mapping:
+          - ollama (11434):  /api/generate → /api/generate, /api/chat → /api/chat
+          - llama-server (11436): /api/generate → /completion,
+                                  /api/chat → /v1/chat/completions (OpenAI format)
+        """
         try:
             data = json.loads(body)
             if endpoint == "generate":
@@ -122,7 +130,13 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, IndexError, KeyError) as e:
             logger.warning("Failed to parse request body: %s", e)
 
-        self._forward_to_backend(body, f"/api/{endpoint}")
+        # 后端端点映射：llama-server 用 OpenAI 兼容端点，不是 ollama /api/*
+        if endpoint == "chat" and "11436" in self.backend_url:
+            self._forward_to_backend(body, "/v1/chat/completions")
+        elif endpoint == "generate" and "11436" in self.backend_url:
+            self._forward_to_backend(body, "/completion")
+        else:
+            self._forward_to_backend(body, f"/api/{endpoint}")
 
     # ── Backend forwarding ───────────────────────────────────────
 
