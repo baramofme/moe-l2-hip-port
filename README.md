@@ -34,15 +34,15 @@ user → moe-l2 proxy (localhost:11435)
 
 Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.7 GB VRAM (cache=0.5 on DS-V2-Lite).
 
-### Benchmarked on RTX 4090
+### Benchmarked on RTX 4090 (2026-08-02, host-buffer GPU fast path)
 
-| Mode | GPU VRAM | Speed | What it means |
-|------|----------|-------|---------------|
+| Mode | GPU VRAM | Gen speed | What it means |
+|------|----------|-----------|---------------|
 | Standard (all experts on GPU) | 23.3 GB | 65 t/s | Needs a 24 GB card |
-| **moe-l2** (hot-cached experts) | **2.7 GB** | **~7 t/s** gen · **103 t/s** prompt | **Fits in 4 GB cards** |
-| **Savings** | **88% less** | 11% speed | ~20 GB freed for other work |
+| **moe-l2** (host-buffer experts, GPU compute) | **1.6 GB** | **DS 37.5 t/s · Qwen 46.8 t/s** | **Fits in 4-8 GB cards** |
+| **Savings** | **93% less** | ~40% of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
 
-> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. GPU LRU expert cache (Phase 3) is now **stable** — 0 crashes across 7 cache levels × 3 conversation types. Gen speed is CPU-bound (~5-7 t/s), but followup prompt processing gets 10× faster (~80-103 t/s) from cache hits. Full reports: [Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md)
+> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with the host-buffer build: experts live in CPU pinned memory (zero VRAM), the scheduler copies only the **activated** experts to GPU each step. DS-V2-Lite **12.5 → 37.5 t/s** (+200%), Qwen3.6-A3B **10 → 46.8 t/s** (+370%), VRAM unchanged at 1.6 / 2.1 GB. Full report: `历史记录文档/lru-cache-档位对比测试-20260801.md`
 
 ## Usage
 
@@ -170,31 +170,21 @@ Options:
 
 | Metric | Standard | With moe-l2 |
 |--------|----------|-------------|
-| Prompt processing | 110 t/s | 110 t/s |
-| Generation speed | 65 t/s | ~5-7 t/s |
-| VRAM used | 23.3 GB | 2.7 GB |
-| Model size / VRAM ratio | 0.26× | **2.2×** |
+| Prompt processing | 110 t/s | ~100 t/s |
+| Generation speed (DS-V2-Lite) | 65 t/s | 37.5 t/s |
+| Generation speed (Qwen3.6-A3B) | — | 46.8 t/s |
+| VRAM used (DS-V2-Lite) | 23.3 GB | **1.6 GB** |
+| Model size / VRAM ratio | 0.26× | **3.9×** |
 
-The speed tradeoff is intentional: experts load from system RAM via PCIe. Phase 3 GPU LRU cache is stable — gen speed is CPU-bound (~5-7 t/s), but followup prompt processing reaches ~80-103 t/s from cache hits.
+The speed tradeoff is intentional and small: experts live in CPU pinned memory (host buffer, zero VRAM), and the scheduler copies only activated experts to GPU per step. On the 2026-08-02 host-buffer build, DS-V2-Lite reaches 37.5 t/s gen at 1.6 GB VRAM — ~40% of full-GPU speed at <7% of the VRAM.
 
-## A3 Expert Cache (llama.cpp)
+## Expert Cache & host-buffer fast path (llama.cpp)
 
-Beyond the proxy layer, moe-l2 ships an **A3 (Attention-Aware Expert Cache)** patch for llama.cpp that compiles expert LRU caching directly into the CUDA backend — no proxy needed. Run any llama.cpp binary with `--cpu-moe --expert-cache <fraction>`.
+Beyond the proxy layer, moe-l2 ships llama.cpp patches that compile expert handling directly into the CUDA backend — no proxy needed. Two mechanisms:
 
-```
-./llama-batched -m DeepSeek-V2-Lite.Q2_K.gguf \
-  -p "prompt" -n 128 -ngl 99 \
-  --cpu-moe --expert-cache 0.25
-```
+**1. Host-buffer expert GPU fast path (recommended, 2026-08-02).** Expert tensors are loaded into a **CUDA host buffer** (CPU pinned memory, zero VRAM) instead of a plain CPU buffer. The scheduler then uses its MoE expert-copy optimization — it copies **only the activated experts** to GPU per step instead of the whole expert tensor — and the GPU runs the expert MUL_MAT_ID on the fast path. This is what the benchmark above measures (DS 37.5 / Qwen 46.8 t/s at 1.6 / 2.1 GB VRAM).
 
-**Real benchmark (RTX 4090 · DeepSeek-V2-Lite Q2_K 6.4 GB):**
-
-| Mode | VRAM used | Speed | Savings |
-|------|-----------|-------|---------|
-| OG (---no-mmap, full GPU) | **6,635 MB** | 126.64 t/s | baseline |
-| A3 (--expert-cache 0.25) | **1,175 MB** | 8.22 t/s | **5,460 MB (5.64×)** |
-
-A3 caches 25% of the most-recently-used experts on GPU and swaps inactive ones in from CPU RAM on demand. Good for single-user chat: acceptable latency (~7-8 t/s gen) with >80% VRAM savings. For batch / high-throughput scenarios, increase the cache fraction or omit `--cpu-moe`.
+**2. A3 LRU expert cache (historical, `--expert-cache`).** An LRU cache that keeps recent experts on GPU. Verified on RTX 4090 with DS-V2-Lite: VRAM 6.6 GB → 1.2 GB (5.64×) at 8.2 t/s. This path is only useful when experts are CPU-hosted; it is now superseded by the host-buffer fast path, which is faster at the same VRAM.
 
 ### When the cache helps (and when it doesn't)
 
@@ -234,8 +224,7 @@ Key findings (2026-08-01, per-segment CUDA timing):
 - ✅ L2 cache (mmap LRU, thread-safe, async preload)
 - ✅ Transparent proxy (HTTP/SSE forwarding)
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
-- ✅ GPU mode verified on RTX 4090 (DS-V2-Lite, ~1.6 GiB VRAM, 95% savings)
-- ✅ GPU LRU expert cache (verified: Qwen3.6 + DS-V2-Lite, 7 levels × 3 types, 0 crashes)
+- ✅ Host-buffer expert GPU fast path (2026-08-02): DS-V2-Lite 12.5 → 37.5 t/s, Qwen3.6-A3B 10 → 46.8 t/s at 1.6 / 2.1 GB VRAM — experts in CPU pinned memory, only activated experts copied to GPU
 - ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090: under `--no-mmap` experts are already fully resident in VRAM, so the cache is a no-op layer that adds ~3 ms/token overhead (3.7 → 3.4 t/s); it only pays off when experts are CPU-hosted (mmap). CLI defaults to the mmap configuration.
 - ✅ PyPI package (`moe-l2`)
 
