@@ -695,6 +695,7 @@ moe-l2 collect --model mixtral-8x7b.gguf
 - 默认启用模式 B（零成本随用积累）
 - `moe-l2 collect` 手动触发模式 A（新模型/换领域时加速收敛）
 - GGUF metadata 嵌入保留为可选发布形态（方便分发，不依赖固定位置）
+  - ✅ **已实现（2026-08-02）**：`moe-l2 embed-map --model x.gguf --output y.gguf`（全文件重建，自定义 key `moe_l2.domain_expert_map`）+ `load_embedded_mapping()`（GGUF 优先→JSON 回退）。llama.cpp 加载推理验证通过。定位：厂商预装时模型自带映射，即插即用
 
 ### 模式 A 实现状态（2026-08-01）
 
