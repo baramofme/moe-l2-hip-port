@@ -67,6 +67,18 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 > We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with the host-buffer build: experts live in CPU pinned memory (zero VRAM), the scheduler copies only the **activated** experts to GPU each step. DS-V2-Lite **12.5 → 37.5 t/s** (+200%), Qwen3.6-A3B **10 → 46.8 t/s** (+370%), VRAM unchanged at 1.6 / 2.1 GB. Adding the sched-cache layer pushes DS prompt processing **99 → 308 t/s** (+211%) at cache=0.25, VRAM still 1.6 GB. Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md)
 
+### Multi-architecture binaries (bins-v0.2.0, 2026-08-03)
+
+One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically.
+
+| GPU | Architecture | DS-V2-Lite gen | VRAM |
+|-----|-------------|----------------|------|
+| RTX 2080 Ti | sm_75 (Turing) | 6.89 t/s | ~1.0 GB |
+| RTX 3080 Ti | sm_86 (Ampere) | 12.25 t/s | ~1.1 GB |
+| RTX 4090 | sm_89 (Ada) | 37.5 t/s | 1.6 GB |
+
+> Verified on 2080 Ti (SM75) and 3080 Ti (SM86) with the multi-arch build; the 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). SM89 (4090) and SM120a (50-series) ship in the same binary — verify on your card with `moe-l2 doctor`.
+
 ### Visual demo (RTX 4090, 2026-08-02)
 
 | Qwen3.6-35B-A3B (32B MoE) — standard vs moe-l2 | DeepSeek-V2-Lite (16B MoE) — 8 GB card vs 24 GB card |
@@ -195,7 +207,7 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU; spawns bundled host-buffer llama-server on 11436)
 
-> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~96.5 MB on the `bins-v0.1.1` release). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.6 GB multi-architecture on the `bins-v0.2.0` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 
