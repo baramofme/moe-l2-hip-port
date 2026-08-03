@@ -71,13 +71,16 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically.
 
-| GPU | Architecture | DS-V2-Lite gen | VRAM |
-|-----|-------------|----------------|------|
-| RTX 2080 Ti | sm_75 (Turing) | 6.89 t/s | ~1.0 GB |
-| RTX 3080 Ti | sm_86 (Ampere) | 12.25 t/s | ~1.1 GB |
-| RTX 4090 | sm_89 (Ada) | 37.5 t/s | 1.6 GB |
+| GPU | Architecture | DS-V2-Lite gen | Qwen3.6-A3B gen | VRAM |
+|-----|-------------|----------------|-----------------|------|
+| RTX 2080 Ti | sm_75 (Turing) | 6.89 t/s | 11.15 t/s | ~1.0-2.4 GB |
+| RTX 3080 Ti | sm_86 (Ampere) | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
+| RTX 5090 | sm_120a (Blackwell) | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
+| RTX 4090* | sm_89 (Ada) | 37.5 t/s | 46.8 t/s | 1.6-2.1 GB |
 
-> Verified on 2080 Ti (SM75) and 3080 Ti (SM86) with the multi-arch build; the 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). SM89 (4090) and SM120a (50-series) ship in the same binary — verify on your card with `moe-l2 doctor`.
+\* 4090 为单架构 build（CUDA 11.8）基线数据（8 月 2 日），非多架构包实测。
+
+> Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). Note: SM120a (RTX 50) kernel efficiency in llama.cpp 76f46ad is not yet mature — RTX 5090 shows only +36% over 3080 Ti on DS and −27% on Qwen; a newer llama.cpp rebuild should improve 50-series speed. Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 
 ### Visual demo (RTX 4090, 2026-08-02)
 

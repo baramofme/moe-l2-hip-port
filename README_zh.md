@@ -67,13 +67,16 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 **一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。
 
-| 显卡 | 架构 | DS-V2-Lite 生成速度 | 显存 |
-|------|------|-------------------|------|
-| RTX 2080 Ti | sm_75（Turing） | 6.89 t/s | ~1.0 GB |
-| RTX 3080 Ti | sm_86（Ampere） | 12.25 t/s | ~1.1 GB |
-| RTX 4090 | sm_89（Ada） | 37.5 t/s | 1.6 GB |
+| 显卡 | 架构 | DS-V2-Lite 生成 | Qwen3.6-A3B 生成 | 显存 |
+|------|------|----------------|-----------------|------|
+| RTX 2080 Ti | sm_75（Turing） | 6.89 t/s | 11.15 t/s | ~1.0-2.4 GB |
+| RTX 3080 Ti | sm_86（Ampere） | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
+| RTX 5090 | sm_120a（Blackwell） | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
+| RTX 4090* | sm_89（Ada） | 37.5 t/s | 46.8 t/s | 1.6-2.1 GB |
 
-> 2080 Ti（SM75）和 3080 Ti（SM86）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。SM89（4090）和 SM120a（50 系）在同一个二进制里，可在你的卡上用 `moe-l2 doctor` 验证。
+\* 4090 为单架构 build（CUDA 11.8）基线数据（8 月 2 日），非多架构包实测。
+
+> 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。注意：llama.cpp 76f46ad 对 SM120a（50 系）内核优化还不成熟——5090 比 3080 Ti 只快 36%（DS）甚至慢 27%（Qwen），换新版 llama.cpp 重编后 50 系速度有望提升。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 
 ### 可视化演示（RTX 4090，2026-08-02）
 
