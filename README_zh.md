@@ -63,6 +63,18 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 > 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试。host-buffer 升级后：专家驻留 CPU pinned 内存（零显存），调度器每步只把**激活的专家**拷到 GPU 直算。DS-V2-Lite **12.5 → 37.5 t/s**（+200%），Qwen3.6-A3B **10 → 46.8 t/s**（+370%）。加上 sched-cache 层后 DS prompt 处理 **99 → 308 t/s**（+211%，cache=0.25，VRAM 仍 1.6 GB）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer](references/cache-sched-layer-benchmark.md)
 
+### 多架构二进制（bins-v0.2.0，2026-08-03）
+
+**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。
+
+| 显卡 | 架构 | DS-V2-Lite 生成速度 | 显存 |
+|------|------|-------------------|------|
+| RTX 2080 Ti | sm_75（Turing） | 6.89 t/s | ~1.0 GB |
+| RTX 3080 Ti | sm_86（Ampere） | 12.25 t/s | ~1.1 GB |
+| RTX 4090 | sm_89（Ada） | 37.5 t/s | 1.6 GB |
+
+> 2080 Ti（SM75）和 3080 Ti（SM86）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。SM89（4090）和 SM120a（50 系）在同一个二进制里，可在你的卡上用 `moe-l2 doctor` 验证。
+
 ### 可视化演示（RTX 4090，2026-08-02）
 
 | Qwen3.6-35B-A3B（32B MoE）— 标准 vs moe-l2 | DeepSeek-V2-Lite（16B MoE）— 8GB 卡 vs 24GB 卡 |
@@ -151,7 +163,7 @@ pip install moe-l2
 ```bash
 moe-l2 download-bins
 ```
-从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.1.1，约 96.5 MB）。
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.2.0，约 1.6 GB 多架构全兼容包）。
 
 ### 3. 启动
 
@@ -193,7 +205,7 @@ moe-l2 stats
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.1.1 约 96.5 MB），运行时通过 `moe-l2 download-bins` 获取。
+> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.2.0 约 1.6 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡），运行时通过 `moe-l2 download-bins` 获取。
 
 ---
 
