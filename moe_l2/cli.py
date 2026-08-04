@@ -43,7 +43,7 @@ _GITHUB_REPO = "yalun753/moe-l2"
 _BINS_ASSET_URL = (
     "https://github.com/{repo}/releases/download/{tag}/llama_bins.tar.gz"
 )
-_DEFAULT_BINS_TAG = "bins-v0.2.0"
+_DEFAULT_BINS_TAG = "bins-v0.2.1"
 
 # Where the bundled llama-server lives (relative to this file)
 _BUNDLE_DIR = Path(__file__).resolve().parent / "bin"
@@ -112,11 +112,40 @@ def _parse_l2_size(size_str: str, expert_size: int) -> int:
 
 def _ensure_bins(tag: str | None = None) -> bool:
     """Download bundled binaries if not present. Returns True if ready."""
+    # Self-heal: older releases extract as bin/bin/llama-server (nested prefix).
+    if not _LLAMA_SERVER_PATH.exists() and (_BUNDLE_DIR / "bin" / "llama-server").exists():
+        _flatten_nested_bins()
     if _LLAMA_SERVER_PATH.exists():
         return True
     print(f"  [download-bins] Binary not found at {_BUNDLE_DIR}")
     print(f"  Auto-downloading from GitHub Releases...")
     return _download_bins(tag or _DEFAULT_BINS_TAG)
+
+
+def _flatten_nested_bins() -> None:
+    """Move moe_l2/bin/bin/* up one level (older tarballs carry a bin/ prefix)."""
+    nested = _BUNDLE_DIR / "bin"
+    if not nested.is_dir():
+        return
+    print(f"  [download-bins] Detected nested bin/ layout, flattening ...")
+    for item in sorted(nested.iterdir()):
+        dest = _BUNDLE_DIR / item.name
+        if item.is_dir() and dest.exists() and not dest.is_symlink():
+            # merge directory (e.g. cuda-libs inside bin/)
+            for sub in sorted(item.iterdir()):
+                if not (dest / sub.name).exists():
+                    sub.rename(dest / sub.name)
+            try:
+                item.rmdir()  # drop now-empty nested subdir
+            except OSError:
+                pass
+        elif not dest.exists():
+            item.rename(dest)
+    # drop now-empty nested dir
+    try:
+        nested.rmdir()
+    except OSError:
+        pass
 
 
 def _download_bins(tag: str) -> bool:
@@ -140,6 +169,9 @@ def _download_bins(tag: str) -> bool:
 
     tgz_path.unlink()  # cleanup
 
+    # Self-heal: tarballs from bins-v0.2.0 ship a bin/ prefix → bin/bin/llama-server
+    _flatten_nested_bins()
+
     # Verify
     if _LLAMA_SERVER_PATH.exists():
         size = _LLAMA_SERVER_PATH.stat().st_size
@@ -162,9 +194,15 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
         )
 
     env = os.environ.copy()
-    # Point dynamic linker at bundled .so files
+    # Point dynamic linker at bundled .so files (bin + cuda-libs).
+    # cuda-libs ships libcudart/libcublas/libcublasLt/libnccl — the target
+    # machine may only have a bare NVIDIA driver without the CUDA runtime.
+    lib_paths = [str(_BUNDLE_DIR)]
+    cuda_libs = _BUNDLE_DIR / "cuda-libs"
+    if cuda_libs.is_dir():
+        lib_paths.append(str(cuda_libs))
     env["LD_LIBRARY_PATH"] = (
-        f"{_BUNDLE_DIR}:" + env.get("LD_LIBRARY_PATH", "")
+        ":".join(lib_paths) + ":" + env.get("LD_LIBRARY_PATH", "")
     )
     # Force expert MUL_MAT_ID ops onto GPU even at batch=1 (single-token decode).
     # Default GGML_OP_OFFLOAD_MIN_BATCH is 32 (ggml-cuda.cu), so decode would keep
@@ -477,6 +515,36 @@ def _check_disk(path: Path) -> tuple[bool, str]:
         return True, f"cannot stat {path} (assuming OK)"
 
 
+def _check_dynamic_libs() -> tuple[bool, str]:
+    """Run ldd on llama-server (with bundled lib paths) and report missing libs.
+
+    The existence check alone is not enough: a binary can be present but fail
+    to launch when a shared library (e.g. libnccl.so.2) is missing.
+    """
+    if not _LLAMA_SERVER_PATH.exists():
+        return False, "llama-server missing — run 'moe-l2 download-bins'"
+    env = os.environ.copy()
+    lib_paths = [str(_BUNDLE_DIR)]
+    cuda_libs = _BUNDLE_DIR / "cuda-libs"
+    if cuda_libs.is_dir():
+        lib_paths.append(str(cuda_libs))
+    env["LD_LIBRARY_PATH"] = ":".join(lib_paths) + ":" + env.get("LD_LIBRARY_PATH", "")
+    try:
+        r = subprocess.run(
+            ["ldd", str(_LLAMA_SERVER_PATH)],
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+    except FileNotFoundError:
+        return False, "ldd not available on this system"
+    missing = [
+        line.strip() for line in r.stdout.splitlines()
+        if "not found" in line
+    ]
+    if missing:
+        return False, "missing shared libs: " + "; ".join(missing)
+    return True, "llama-server dynamic deps OK"
+
+
 def cmd_doctor(args):
     """Run environment self-check (GPU, CUDA, Python, disk, binaries)."""
     print(f"moe-l2 {__version__} — doctor: environment self-check")
@@ -490,6 +558,7 @@ def cmd_doctor(args):
             True, "llama-server present" if _LLAMA_SERVER_PATH.exists()
             else "missing — run 'moe-l2 download-bins'"
         )),
+        ("Dynamic libraries", _check_dynamic_libs()),
     ]
     ok_count = 0
     for name, (ok, detail) in checks:
@@ -631,6 +700,17 @@ def cmd_start(args):
 
         # Ensure binaries are present
         if not _ensure_bins():
+            return 1
+
+        # Pre-flight: catch missing shared libs (e.g. libnccl.so.2) before
+        # the 30s health poll, and give an actionable message.
+        libs_ok, libs_detail = _check_dynamic_libs()
+        if not libs_ok:
+            print(f"  ERROR: llama-server dynamic libraries not satisfiable")
+            print(f"    {libs_detail}")
+            print(f"    Fix: run 'moe-l2 doctor' for details; if libnccl.so.2 is")
+            print(f"    missing, update to a recent moe-l2 release (bins >= v0.2.1")
+            print(f"    bundles libnccl) or install the NVIDIA nccl library.")
             return 1
 
         try:

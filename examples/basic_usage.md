@@ -38,7 +38,7 @@ Starting proxy on 127.0.0.1:11435
 - 代理监听 `localhost:11435`，后端 llama-server 在 `11436`
 - 内部自动设置 `GGML_OP_OFFLOAD_MIN_BATCH=1`：专家驻留 CPU pinned 内存（host buffer，零显存），每步只把激活的专家拷到 GPU 直算
 - 实测（RTX 4090）：DS-V2-Lite 37.5 t/s @ 1.6 GB、Qwen3.6-A3B 46.8 t/s @ 2.1 GB
-- 多架构二进制（bins-v0.2.0）：GTX 1080 → RTX 50 系一个包全支持（2080 Ti 6.89 / 3080 Ti 12.25 / 5090 16.63 t/s，DS-V2-Lite），见 [multi-arch-three-gpu-benchmark.md](../references/multi-arch-three-gpu-benchmark.md)
+- 多架构二进制（bins-v0.2.1）：GTX 1080 → RTX 50 系一个包全支持（2080 Ti 6.89 / 3080 Ti 12.25 / 5090 16.63 t/s，DS-V2-Lite），见 [multi-arch-three-gpu-benchmark.md](../references/multi-arch-three-gpu-benchmark.md)
 
 ## 使用
 

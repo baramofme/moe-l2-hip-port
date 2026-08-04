@@ -22,7 +22,7 @@ moe-l2 是一个面向消费级 NVIDIA 显卡的 MoE（混合专家）模型推�
 | 生成速度（Qwen3.6-A3B） | — | **46.8 t/s** | — |
 | 模型/显存比 | 0.26× | **3.9×** | +15 倍 |
 
-> **多架构全兼容（2026-08-03，bins-v0.2.0）**：一个二进制支持所有 NVIDIA 消费卡（GTX 1080 sm_61 → RTX 50 系 sm_120a，CUDA 12.8 编译）。三卡实测（DS-V2-Lite）：RTX 2080 Ti 6.89 t/s、RTX 3080 Ti 12.25 t/s（比旧 CUDA 11.8 单架构快 55%）、RTX 5090 16.63 t/s。完整报告见 [multi-arch-three-gpu-benchmark.md](multi-arch-three-gpu-benchmark.md)。
+> **多架构全兼容（2026-08-04，bins-v0.2.1）**：一个二进制支持所有 NVIDIA 消费卡（GTX 1080 sm_61 → RTX 50 系 sm_120a，CUDA 12.8 编译）。三卡实测（DS-V2-Lite）：RTX 2080 Ti 6.89 t/s、RTX 3080 Ti 12.25 t/s（比旧 CUDA 11.8 单架构快 55%）、RTX 5090 16.63 t/s。完整报告见 [multi-arch-three-gpu-benchmark.md](multi-arch-three-gpu-benchmark.md)。v0.2.1 修复打包问题（bin/ 嵌套前缀、缺 libnccl.so.2）。
 
 技术本质一句话：**MoE 模型每步推理只激活少量专家（top-2~8 / 数百个），全量驻留显存是浪费。moe-l2 把专家放在 CPU 内存（零显存），GPU 每步只取激活专家计算，热专家用缓存留在 GPU 免 PCIe 往返。**
 
@@ -320,7 +320,7 @@ moe-l2 start --model model.gguf --gpu
 
 - OpenAI 兼容 API（`/v1/chat/completions`），curl / Open WebUI / LangChain 直接连
 - 平台：Linux x86_64 + NVIDIA（CUDA）——macOS / Windows / ARM Linux 暂不支持
-- 预编译二进制从 GitHub Release 分发（`bins-v0.2.0`，1.6 GB 多架构全兼容包：sm_61/75/86/89/120a，GTX 1080 → RTX 50 系一个二进制全支持）
+- 预编译二进制从 GitHub Release 分发（`bins-v0.2.1`，1.9 GB 多架构全兼容包：sm_61/75/86/89/120a，GTX 1080 → RTX 50 系一个二进制全支持；cuda-libs 含 libnccl.so.2）
 
 ---
 

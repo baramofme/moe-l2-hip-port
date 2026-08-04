@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moe-l2"
-version = "0.6.0"
+version = "0.6.1"
 description = "MoE inference L2 hot-cache scheduler — run large MoE models on consumer GPUs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,4 +47,9 @@ exclude = ["moe_l2.bin", "moe_l2.bin.*"]
 [tool.setuptools.package-data]
 moe_l2 = [
     "data/*.json",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]
