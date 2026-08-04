@@ -94,6 +94,22 @@
 
 ## 4. 技术边界（诚实声明）
 
+### 框架行为观察：22GB 中间缓冲区的真相（llama.cpp 生态理解）
+
+> 这是对 llama.cpp 框架行为的分析结论，非 moe-l2 实现细节——公开供生态参考。
+
+**现象**：DS-V2-Lite（6GB Q2_K）在无 GPU 环境下推理，RSS 峰值高达 23.3GB，远超模型本身大小。
+
+**常见误解**：以为 22GB 是 warmup 阶段全量加载专家（n_expert_used=64）造成的。
+
+**真相**（2026-08-28 修正）：
+1. `cparams.warmup` 早已 deprecated，实际推理永远走 `n_expert_used=6`（正常激活数），与 warmup 无关
+2. 22GB 的构成：prefill 阶段（n_tokens 大，512~2048）的 attention 大矩阵（kq/kq_mask，~14GB）+ MoE 中间结果（~1.6GB）+ KV cache（~1.5GB）+ 权重文件页调入（~6GB）+ ggml-alloc chunk padding
+3. **根因是 ggml-alloc 的一次性分配策略**：首次 prefill 按大 n_tokens 一次性 malloc 全部中间 buffer（~22GB 匿名页）；后续 decode（n_tokens=1）时 `needs_realloc` 检查发现新 tensor ≤ 已分配大小 → 判定不需要 realloc → **prefill 的峰值 buffer 永久残留，不缩容**
+4. decode 1 token 实际只需要每层 ~5-10MB 中间 buffer——22GB 是 prefill 峰值残留，不是 decode 的真实需求
+
+**对生态的意义**：任何 llama.cpp 用户跑长 prompt prefill 后，RSS 都会永久保留 prefill 峰值，即使后续全是单 token decode。这是 ggml-alloc 复用策略的固有行为（"allocate once, reuse forever"），不是 bug，但值得生态知晓——尤其在内存受限设备（8GB 内存的迷你主机/树莓派）上，prefill 峰值可能直接决定能否运行。
+
 ### 235B 终极验证（Qwen3-235B-A22B，2026-08-02）
 - **已验证**：8GB 卡可运行 81.7GB 的 235B MoE（Q2_K），证明"小显存跑大模型"上限成立
 - **速度**：~1 t/s——这是 22B 激活参数在单卡 4090 上的算力物理极限（SM 82% 满载，瓶颈是 GPU 计算本身而非搬运/缓存/调度）

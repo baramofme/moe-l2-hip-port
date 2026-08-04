@@ -94,6 +94,22 @@ Phases 1-2 solved *memory control* but exposed a new problem: **memory is saved,
 
 ## 4. Technical Boundaries (honest disclosure)
 
+### Framework behavior note: the truth about the 22GB intermediate buffer (llama.cpp ecosystem understanding)
+
+> This is an analysis of llama.cpp framework behavior, not moe-l2 implementation detail — published for ecosystem reference.
+
+**Phenomenon**: DS-V2-Lite (6GB Q2_K) reaches 23.3GB peak RSS during CPU-only inference — far beyond the model size itself.
+
+**Common misconception**: the 22GB was blamed on warmup loading all experts (n_expert_used=64).
+
+**Truth** (corrected 2026-08-28):
+1. `cparams.warmup` is deprecated; real inference always uses `n_expert_used=6` (the normal activation count) — warmup is irrelevant
+2. The 22GB breakdown: prefill phase (large n_tokens, 512-2048) attention matrices (kq/kq_mask, ~14GB) + MoE intermediates (~1.6GB) + KV cache (~1.5GB) + weight-file page-ins (~6GB) + ggml-alloc chunk padding
+3. **Root cause is ggml-alloc's one-shot allocation strategy**: the first prefill mallocs all intermediate buffers (~22GB anonymous pages) for the large n_tokens; on later decode (n_tokens=1), the `needs_realloc` check finds new tensors ≤ already-allocated sizes → decides no realloc is needed → **the prefill peak buffer persists forever, never shrinks**
+4. Decode of 1 token actually needs only ~5-10MB of intermediate buffers per layer — the 22GB is a prefill-peak residue, not decode's real requirement
+
+**Ecosystem significance**: any llama.cpp user running a long-prompt prefill keeps the prefill peak RSS permanently, even if all subsequent steps are single-token decodes. This is an inherent behavior of ggml-alloc's reuse strategy ("allocate once, reuse forever") — not a bug, but worth knowing, especially on memory-constrained devices (8GB mini-PCs / Raspberry Pi) where the prefill peak can decide whether the model runs at all.
+
 ### 235B ultimate validation (Qwen3-235B-A22B, 2026-08-02)
 - **Verified**: an 81.7GB 235B MoE (Q2_K) runs on an 8GB card — proving the "small VRAM runs big models" ceiling holds
 - **Speed**: ~1 t/s — the physical compute limit of 22B activated parameters on a single RTX 4090 (SM 82% saturated; bottleneck is GPU compute itself, not transfer/cache/scheduling)
