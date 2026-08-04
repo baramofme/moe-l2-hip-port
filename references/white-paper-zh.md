@@ -5,7 +5,7 @@
 - 版本：v1.0（2026-08-02）
 - 作者：moe-l2 项目组（yalun753）
 - 读者：技术决策人、架构师、AI 基础设施团队
-- 配套：README（快速上手）、references/（benchmark 原始报告）
+- 配套：README（快速上手）、references/（benchmark 原始报告）、[design-decisions.md](design-decisions.md)（方案演进史：为什么最终是 host-buffer）
 
 ---
 
