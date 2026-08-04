@@ -351,8 +351,8 @@ moe-l2 start --model model.gguf --gpu
 | 阶段 | 内容 | 优先级 |
 |------|------|--------|
 | P0 | 一键安装包 ✅ / Benchmark ✅（235B 演示验证留档）/ 白皮书 ✅ | 当前 |
-| P1 | Windows + NVIDIA 移植、AI PC 厂商 PoC、社区 issue/PR | 产品化后期 |
-| P2 | 模式 B 边用边收集、多模型通用化、域切换平滑过渡 | 后续 |
+| P1 | Windows + NVIDIA 移植、AI PC 厂商 PoC、社区 issue/PR ✅（llama.cpp #26448 + ollama #17557） | 产品化后期 |
+| P2 | 模式 B 边用边收集 ✅ / 多模型通用化 ✅（DS/Qwen/Mixtral/235B + sm_61→sm_120a）/ 域切换平滑过渡 ✅ | 已完成 |
 
 ---
 
