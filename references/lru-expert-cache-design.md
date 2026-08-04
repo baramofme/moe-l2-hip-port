@@ -109,6 +109,8 @@ Default unset = cache off; existing users unaffected.
 
 ## 6. Decision Review
 
+**Measured transfer-vs-compute breakdown (DS-V2-Lite Q2_K, CPU baseline)**: per-expert memcpy swap-in ~1,150 µs (peak ~1,800 µs) vs gemv compute ~2,045 µs — **swap is ~36% of the per-expert step cost**. Even on CPU DDR4→DDR4 (no PCIe involved), moving experts is a third of the latency; on GPU with PCIe (12 GB/s vs 60 GB/s DDR4 bandwidth) the transfer share is even larger. This is the concrete justification for an LRU cache: eliminate repeat transfers, keep the hot experts resident.
+
 H2D pipelining (double-buffer + multi-stream overlap) was **already measured and rejected**: DS-V2-Lite Q2_K single expert is only 1.55 MB — 60 µs over PCIe Gen4, while the MMVQ kernel runs in <10 µs. Overlap yields zero benefit.
 
 LRU cache is the next rational step — invest **~50 MB VRAM** (1.2 → 1.25 GiB, +4%) for a shot at **60%+ hit rate ≈ near-double speed**. Even 40% gives 8.6 → 11.5 t/s, far better than the 0-benefit pipeline.
