@@ -43,7 +43,7 @@ _GITHUB_REPO = "yalun753/moe-l2"
 _BINS_ASSET_URL = (
     "https://github.com/{repo}/releases/download/{tag}/llama_bins.tar.gz"
 )
-_DEFAULT_BINS_TAG = "bins-v0.2.1"
+_DEFAULT_BINS_TAG = "bins-v0.3.0"
 
 # Where the bundled llama-server lives (relative to this file)
 _BUNDLE_DIR = Path(__file__).resolve().parent / "bin"
