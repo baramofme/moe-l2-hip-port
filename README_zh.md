@@ -13,6 +13,9 @@ English | [**中文**](README_zh.md)
 | **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** |
 | 12 GB | 13B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
+| 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85GB 文件）✅** |
+
+**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)
 
 **一行安装（Linux x86_64 + NVIDIA 显卡）：**
 
@@ -270,6 +273,7 @@ moe-l2 stats
 - ✅ CLI（start/stats/collect/embed-map/download-bins，自动模型检测，GPU 模式）
 - ✅ host-buffer 专家 GPU 直算（2026-08-02）：DS-V2-Lite 12.5 → 37.5 t/s、Qwen3.6-A3B 10 → 46.8 t/s，VRAM 1.6 / 2.1 GB — 专家驻留 CPU pinned 零显存，调度器只拷激活专家
 - ✅ cache 挂 sched 拷贝层（2026-08-02）：DS 类模型 Prompt 99 → 308 t/s（+211%，cache=0.25，VRAM 不变）；Qwen/Mixtral 无收益不开
+- ✅ **DeepSeek-V4-Flash（157B MoE）验证通过（2026-08-05）**：85GB 三片 GGUF 在 2080 Ti（11GB）和 RTX 3080（10GB）上跑通——VRAM 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶（`MOE_L2_LRU_MAX_EXPERTS` 固定专家数 LRU）、多分片 GGUF 解析修复已随 0.7.0 发布。速度 0.89-2.22 t/s（卡算力极限）。[完整报告](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI 包（`moe-l2`）
 
 ---

@@ -54,8 +54,9 @@ user → moe-l2 proxy (localhost:11435)
 | **8 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** |
 | 12 GB | 13B dense | DeepSeek-V2 (236B MoE) ✅ |
 | 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ✅ |
+| 10-11 GB | — | **DeepSeek-V4-Flash (157B MoE, 85 GB file) ✅** |
 
-Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.1 GB VRAM (host-buffer experts on Qwen3.6-A3B, GPU compute).
+Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.1 GB VRAM (host-buffer experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — verified on 2080 Ti (0.89-1.07 t/s) and RTX 3080 (2.11-2.22 t/s), with expert-page eviction keeping RSS capped. Full report: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)
 
 ### Benchmarked on RTX 4090 (2026-08-02, host-buffer GPU fast path)
 
@@ -80,7 +81,7 @@ One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-
 
 \* 4090 为单架构 build（CUDA 11.8）基线数据（8 月 2 日），非多架构包实测。
 
-> Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). Note: SM120a (RTX 50) kernel efficiency in llama.cpp 76f46ad is not yet mature — RTX 5090 shows only +36% over 3080 Ti on DS and −27% on Qwen; a newer llama.cpp rebuild should improve 50-series speed. Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
+> Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). Note: SM120a (RTX 50) kernel efficiency in llama.cpp 76f46ad is not yet mature — RTX 5090 shows only +36% over 3080 Ti on DS and −27% on Qwen; a newer llama.cpp rebuild should improve 50-series speed. Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md) · **DeepSeek V4 Flash (157B) dual-GPU run: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)**
 
 ### Visual demo (RTX 4090, 2026-08-02)
 
@@ -278,6 +279,7 @@ Key findings (2026-08-02, cache hooked into the scheduler input-copy layer):
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
 - ✅ Host-buffer expert GPU fast path (2026-08-02): DS-V2-Lite 12.5 → 37.5 t/s, Qwen3.6-A3B 10 → 46.8 t/s at 1.6 / 2.1 GB VRAM — experts in CPU pinned memory, only activated experts copied to GPU
 - ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090 (2026-08-02, sched-cache): cache benefit = expert size × hit rate — DS-V2-Lite (1.55 MB, top-6) gets Prompt +211% / Gen +5% at cache=0.25; Qwen (~1 MB) and Mixtral (252 MB, top-2) get no gain. Recommended: cache=0.25 for DS-class, off otherwise.
+- ✅ **DeepSeek-V4-Flash (157B MoE) verified (2026-08-05)**: 85 GB 3-shard GGUF runs on 2080 Ti (11 GB) and RTX 3080 (10 GB) — VRAM 8.3-9.1 GB, RSS capped by expert-page eviction v3.1 (fixed-expert-count LRU, `MOE_L2_LRU_MAX_EXPERTS`), multi-shard GGUF parsing fix shipped. Speed 0.89-2.22 t/s (GPU compute bound). [Full report](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI package (`moe-l2`)
 
 ---
