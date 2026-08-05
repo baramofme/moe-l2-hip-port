@@ -207,7 +207,7 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
     def _proxy_request(self, method: str, body: bytes = None):
         """Generic HTTP proxy for endpoints like /api/tags, /api/show, etc."""
         url = f"{self.backend_url}{self.path}"
-        client = httpx.Client(timeout=30.0)
+        client = httpx.Client(timeout=600.0)
         try:
             req = client.build_request(method, url, content=body)
             resp = client.send(req)
