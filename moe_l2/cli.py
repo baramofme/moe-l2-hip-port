@@ -676,7 +676,30 @@ def cmd_start(args):
 
         # Compute slots from expert size directly
         from .gguf_reader import MoEGGUFReader
-        reader = MoEGGUFReader(model_path)
+
+        # Multi-shard GGUF: the first shard (e.g. -00001-of-00003) usually
+        # holds only metadata (no tensors). GGUFReader must point at a shard
+        # that actually contains tensor data (verified 2026-08-05 with
+        # DeepSeek-V4-Flash UD-IQ2_M: shard 1 = 5 MB metadata-only, 0 tensors).
+        # Pick the largest sibling shard in the same directory.
+        probe = Path(model_path)
+        reader_path = model_path  # default: same file (single-shard case)
+        if "-00001-of-" in probe.name:
+            siblings = sorted(
+                probe.parent.glob(probe.name.replace("-00001-of-", "-*-of-")),
+                key=lambda p: p.stat().st_size,
+                reverse=True,
+            )
+            if siblings:
+                # llama-server MUST load from shard 1 (it auto-discovers the
+                # sibling shards); only the metadata reader needs the data
+                # shard. Keep both: model_path stays shard 1 for the server,
+                # reader_path points at the largest shard for GGUF parsing.
+                reader_path = str(siblings[0])
+                cache_kwargs["model_path"] = reader_path
+                print(f"  multishard: reading expert layout from {Path(reader_path).name}")
+
+        reader = MoEGGUFReader(reader_path)
         expert_size = reader.per_expert_size()
         slots = _parse_l2_size(l2_size_str, expert_size)
         print(f"  expert:   {expert_size // (1024*1024)} MB each")
