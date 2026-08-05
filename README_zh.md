@@ -263,6 +263,24 @@ moe-l2 stats
 | GPU 加速 | 仅 CPU（NEON） | **CUDA + GPU 显存** |
 | 目标用户 | 移动 / 边缘设备开发者 | **桌面家庭用户** |
 
+### AirLLM（lyogavin/airllm，~29k stars）
+
+AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**为调度粒度：推理全程仅在显存保留单一层权重，其余落盘交换，实现极致低显存门槛（4GB 跑 70B）。但存在三个短板：① 每生成一个 Token 都要反复读写磁盘加载/释放整层权重，IO 开销巨大，对话生成速度极低；② 无 MoE 专属路由预测与专家热缓存（2026-07 才开始逐专家流式加载，Kimi K3），重复提问持续触发大量磁盘读取；③ 基于 Hugging Face Transformers 原生开发，无内置 OpenAI 服务接口，难以直接对接 Open WebUI、LangChain 等工具链。
+
+| 维度 | AirLLM | moe-l2 |
+|------|--------|--------|
+| 调度最小单元 | Transformer 完整网络层 | **MoE 独立专家（稀疏最优）** |
+| 目标模型 | 全模型兼容（稠密 + MoE） | **深度优化 MoE（DeepSeek/Qwen/Mixtral）** |
+| 底层权重格式 | Hugging Face 原生权重 | **GGUF（llama.cpp 生态）** |
+| 运行平台 | Windows/macOS/Linux 全兼容 | Linux x86_64 + NVIDIA 显卡 |
+| MoE 场景内存 | 整层落盘交换，无热缓存 | **85GB V4：VRAM 8.3GB + RSS 11-12GB 封顶（实测）** |
+| MoE 场景速度 | 逐层反复磁盘交换，适合批量离线 | 热专家缓存减少磁盘 IO，支持实时对话（Qwen 全链路 9.3 t/s 实测） |
+| 服务接口 | 仅 Python 代码调用，无内置 Web 服务 | **内置 OpenAI 兼容代理（11435），开箱即用** |
+| 显卡适配 | 原生 transformers，CUDA 适配繁琐 | **download-bins 多架构内核，10 系~50 系 N 卡全覆盖** |
+| 超大分片模型 | 无针对性适配 | **原生修复多分片元数据解析 BUG，85GB 3 分片 V4 稳定** |
+
+**选择建议**：选 moe-l2——本地跑 DeepSeek/Qwen 等 MoE 日常聊天、8G~12G 老消费 N 卡兼顾显存与速度、需要 OpenAI API 对接工具链、使用多分片超大 GGUF。选 AirLLM——需要运行稠密大模型、使用 Windows/macOS/AMD 或 CPU-only 环境（moe-l2 当前仅支持 Linux + NVIDIA）、仅一次性批量生成、只能用原生 HF 权重。
+
 ---
 
 ## 项目状态

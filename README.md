@@ -271,6 +271,24 @@ Key findings (2026-08-02, cache hooked into the scheduler input-copy layer):
 | GPU acceleration | CPU only (NEON) | **CUDA + GPU VRAM** |
 | Target user | Mobile / edge developers | **Desktop homelab users** |
 
+### AirLLM (lyogavin/airllm, ~29k stars)
+
+AirLLM is a general-purpose layer-offload scheme for very large models. Its scheduling granularity is the **full Transformer layer**: during inference only one layer's weights stay in VRAM, everything else is swapped to/from disk — giving an extreme low-VRAM floor (4GB GPU runs 70B). But it has three weaknesses: ① every generated token requires reading/writing a full layer to/from disk, so IO cost is huge and interactive speed is very low; ② no MoE-specific routing prediction or expert hot cache (per-expert streaming only started in 2026-07, with Kimi K3), so repeated prompts keep triggering heavy disk reads; ③ built on native Hugging Face Transformers, with no OpenAI-compatible serving interface out of the box, making it awkward to wire into Open WebUI, LangChain, etc.
+
+| Dimension | AirLLM | moe-l2 |
+|-----------|--------|--------|
+| Scheduling unit | Full Transformer layer | **Per-expert (sparse-optimal)** |
+| Target models | All models (dense + MoE) | **MoE-optimized (DeepSeek / Qwen / Mixtral)** |
+| Weight format | Native Hugging Face weights | **GGUF (llama.cpp ecosystem)** |
+| Platform | Windows / macOS / Linux, incl. CPU | Linux x86_64 + NVIDIA GPU |
+| MoE memory | Whole-layer disk swap, no hot cache | **85GB V4: 8.3GB VRAM + 11-12GB RSS cap (measured)** |
+| MoE speed | Per-layer disk thrash, batch-offline only | Hot-expert cache cuts disk IO, real-time chat (Qwen full-chain 9.3 t/s measured) |
+| Serving API | Python-code only, no web service | **Built-in OpenAI-compatible proxy (:11435), drop-in** |
+| GPU support | Native transformers, manual CUDA setup | **Multi-arch kernels via download-bins, GTX10xx–RTX50xx** |
+| Multi-shard GGUF | No specific support | **Fixed multi-shard metadata parsing, 85GB 3-shard V4 stable** |
+
+**Which to choose**: pick moe-l2 if you run MoE models (DeepSeek/Qwen) locally for chat, have an 8–12GB older NVIDIA card, want an OpenAI API for tooling, or use multi-shard giant GGUFs. Pick AirLLM if you need dense (non-MoE) models, use Windows/macOS/AMD or CPU-only environments (moe-l2 currently requires Linux + NVIDIA), only do one-shot batch generation, or must stay with native HF weights.
+
 ## Project status
 
 - ✅ Domain predictor (keyword + optional semantic)
