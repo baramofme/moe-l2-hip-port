@@ -72,9 +72,9 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 > We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with the host-buffer build: experts live in CPU pinned memory (zero VRAM), the scheduler copies only the **activated** experts to GPU each step. DS-V2-Lite **12.5 → 37.5 t/s** (+200%), Qwen3.6-A3B **10 → 46.8 t/s** (+370%), VRAM unchanged at 1.6 / 2.1 GB. Adding the sched-cache layer pushes DS prompt processing **99 → 308 t/s** (+211%) at cache=0.25, VRAM still 1.6 GB. Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md) · **Why host-buffer? Full approach history: [design-decisions_EN.md](references/design-decisions_EN.md) / [design-decisions.md (中文)](references/design-decisions.md)**
 
-### Multi-architecture binaries (bins-v0.2.1, 2026-08-04)
+### Multi-architecture binaries (bins-v0.3.0, 2026-08-05)
 
-One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. v0.2.1 fixes the bins-v0.2.0 packaging bugs (nested `bin/` prefix and missing `libnccl.so.2`).
+One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. v0.3.0 adds **expert-page eviction v3.1** (`MOE_L2_LRU_MAX_EXPERTS=N`): keep only the N hottest experts resident and evict the coldest overflow — near-zero slowdown (Qwen -2% vs -24% on v2), full-chain RSS capped (Qwen 5 GB, V4-Flash 11-12 GB on 2080 Ti). Includes A3 patch + host-buffer + libnccl.so.2 + cuda-libs.
 
 | GPU | Architecture | DS-V2-Lite gen | Qwen3.6-A3B gen | VRAM |
 |-----|-------------|----------------|-----------------|------|
@@ -215,7 +215,7 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU; spawns bundled host-buffer llama-server on 11436)
 
-> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.9 GB multi-architecture on the `bins-v0.2.1` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs incl. libnccl.so.2). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.9 GB multi-architecture on the `bins-v0.3.0` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs incl. libnccl.so.2). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 
