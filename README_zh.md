@@ -1,6 +1,6 @@
 # moe-l2
 
-English | [**中文**](README_zh.md)
+[English](README.md) | [**中文**](README_zh.md)
 
 [![PyPI version](https://img.shields.io/pypi/v/moe-l2)](https://pypi.org/project/moe-l2/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
@@ -251,19 +251,6 @@ moe-l2 stats
 ---
 
 ## 相关工作
-
-[TencentYoutuResearch/Palm-Infra](https://github.com/TencentYoutuResearch/Palm-Infra) / **mollm** 是腾讯的 C++ 推理引擎，在 Apple Silicon / ARM Linux 上通过 SSD expert 卸载运行 MoE 模型（122B MoE + 16 GB 峰值 RSS，16.22 t/s）。
-
-两者核心思路相同（expert 缓存 + 分层存储），但面向不同用户：
-
-| 维度 | mollm（腾讯） | moe-l2 |
-|------|-------------|--------|
-| 平台 | Apple Silicon / ARM Linux | **Linux x86_64 + GPU（NVIDIA）** |
-| 安装 | 源码编译（CMake + C++） | **pip install moe-l2** |
-| 模型兼容性 | 仅 Qwen 系列 | **任何 llama.cpp 支持的 MoE** |
-| 后端 | 自研 C++ 引擎 | **llama.cpp 代理 — 零迁移** |
-| GPU 加速 | 仅 CPU（NEON） | **CUDA + GPU 显存** |
-| 目标用户 | 移动 / 边缘设备开发者 | **桌面家庭用户** |
 
 ### AirLLM（lyogavin/airllm，~29k stars）
 

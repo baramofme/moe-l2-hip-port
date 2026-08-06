@@ -1,5 +1,7 @@
 # moe-l2
 
+[English](README.md) | [**中文**](README_zh.md)
+
 **MoE expert offload for low-VRAM GPUs — run 100B+ MoE models (DeepSeek, Qwen, Mixtral) on 8 GB cards.** A transparent, OpenAI-compatible proxy that predicts which experts your prompt needs and preloads them into a shared-memory LRU cache, so you can run 16 GB+ MoE models on 8 GB GPUs with up to 91% VRAM savings.
 
 > ⭐ **Found this useful? Give us a star** — it helps others discover the project. [★ Star on GitHub](https://github.com/yalun753/moe-l2)
@@ -261,17 +263,6 @@ Key findings (2026-08-02, cache hooked into the scheduler input-copy layer):
 > Run the demo yourself: `bash examples/demo_a3_compression.sh` (edit paths first).
 
 ## Related work
-
-[TencentYoutuResearch/Palm-Infra](https://github.com/TencentYoutuResearch/Palm-Infra) / **mollm** is a C++ engine from Tencent for MoE models with SSD expert offload on Apple Silicon / ARM Linux (16.22 t/s, 122B MoE, 16 GB peak RSS).
-
-| Dimension | mollm (Tencent) | moe-l2 |
-|-----------|-----------------|--------|
-| Platform | Apple Silicon / ARM Linux | **Linux x86_64 + GPU (NVIDIA)** |
-| Install | Build from source (CMake + C++) | **pip install moe-l2** |
-| Model support | Qwen-series only | **Any llama.cpp MoE** (DeepSeek, Qwen, Mixtral...) |
-| Backend | Custom C++ engine | **llama.cpp proxy** — zero migration |
-| GPU acceleration | CPU only (NEON) | **CUDA + GPU VRAM** |
-| Target user | Mobile / edge developers | **Desktop homelab users** |
 
 ### AirLLM (lyogavin/airllm, ~29k stars)
 
