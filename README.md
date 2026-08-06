@@ -2,6 +2,8 @@
 
 **MoE expert offload for low-VRAM GPUs — run 100B+ MoE models (DeepSeek, Qwen, Mixtral) on 8 GB cards.** A transparent, OpenAI-compatible proxy that predicts which experts your prompt needs and preloads them into a shared-memory LRU cache, so you can run 16 GB+ MoE models on 8 GB GPUs with up to 91% VRAM savings.
 
+> ⭐ **Found this useful? Give us a star** — it helps others discover the project. [★ Star on GitHub](https://github.com/yalun753/moe-l2)
+
 ## Quick start
 
 **One-line install (Linux x86_64 + NVIDIA GPU):**

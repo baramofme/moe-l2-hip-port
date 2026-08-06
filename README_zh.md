@@ -7,6 +7,8 @@ English | [**中文**](README_zh.md)
 
 **MoE 专家卸载（expert offload）低显存方案 — 8GB 显卡也能跑 100B+ MoE 大模型（DeepSeek、Qwen、Mixtral），省 93% 显存，一行 pip 搞定。**
 
+> ⭐ **觉得有用？点个 Star** —— 让更多需要的人发现它。[★ 去 GitHub 点赞](https://github.com/yalun753/moe-l2)
+
 | 你的显卡 | 正常能跑 | **用了 moe-l2** |
 |----------|---------|-----------------|
 | 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ |
