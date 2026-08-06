@@ -1,6 +1,6 @@
 # moe-l2
 
-**Run large MoE models on consumer GPUs.** A transparent proxy that predicts which experts your prompt needs, preloads them into a shared-memory LRU cache, so you can run 16 GB+ models on 8 GB GPUs.
+**MoE expert offload for low-VRAM GPUs — run 100B+ MoE models (DeepSeek, Qwen, Mixtral) on 8 GB cards.** A transparent, OpenAI-compatible proxy that predicts which experts your prompt needs and preloads them into a shared-memory LRU cache, so you can run 16 GB+ MoE models on 8 GB GPUs with up to 91% VRAM savings.
 
 ## Quick start
 

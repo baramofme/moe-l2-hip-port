@@ -5,7 +5,7 @@ English | [**中文**](README_zh.md)
 [![PyPI version](https://img.shields.io/pypi/v/moe-l2)](https://pypi.org/project/moe-l2/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
 
-**8GB 显卡也能跑 32B MoE 大模型 — 省 93% 显存，一行 pip 搞定。**
+**MoE 专家卸载（expert offload）低显存方案 — 8GB 显卡也能跑 100B+ MoE 大模型（DeepSeek、Qwen、Mixtral），省 93% 显存，一行 pip 搞定。**
 
 | 你的显卡 | 正常能跑 | **用了 moe-l2** |
 |----------|---------|-----------------|
