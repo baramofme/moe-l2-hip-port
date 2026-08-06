@@ -15,7 +15,7 @@ English | [**中文**](README_zh.md)
 | 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 | 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85GB 文件）✅** |
 
-**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)
+**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
 
 **一行安装（Linux x86_64 + NVIDIA 显卡）：**
 

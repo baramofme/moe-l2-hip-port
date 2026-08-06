@@ -56,7 +56,7 @@ user → moe-l2 proxy (localhost:11435)
 | 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ✅ |
 | 10-11 GB | — | **DeepSeek-V4-Flash (157B MoE, 85 GB file) ✅** |
 
-Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.1 GB VRAM (host-buffer experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — verified on 2080 Ti (0.89-1.07 t/s) and RTX 3080 (2.11-2.22 t/s), with expert-page eviction keeping RSS capped. Full report: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)
+Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.1 GB VRAM (host-buffer experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — verified on 2080 Ti (0.89-1.07 t/s) and RTX 3080 (2.11-2.22 t/s), with expert-page eviction keeping RSS capped. Full report: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **All measured models: [models-benchmark.md](references/models-benchmark.md)**
 
 ### Benchmarked on RTX 4090 (2026-08-02, host-buffer GPU fast path)
 

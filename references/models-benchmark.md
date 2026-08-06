@@ -1,0 +1,71 @@
+# moe-l2 支持的模型实测汇总（2026-08-05 更新）
+
+> 全部为 moe-l2 **完整链路**（proxy + L2 cache + host-buffer GPU 直算 + v3.1 专家页淘汰）实测数据，可复现。
+> 测试口径：每请求 64-128 token、n_predict=128、c=512-2048、`GGML_OP_OFFLOAD_MIN_BATCH=1`、LLAMA_EXPERT_LOG=1。
+> 各模型详细报告链接见文末。
+
+## 总表（按模型规模）
+
+| 模型 | 参数 | 文件 | 量化 | 专家 (激活) | GPU 显存 | Host RSS | 速度 | 在哪验证 |
+|------|------|------|------|------------|----------|----------|------|----------|
+| DeepSeek-V2-Lite | 16B MoE | 6 GB | Q2_K | 64 (top-6) | **1.0-1.6 GB** | — | **37.5 t/s** (4090) | RTX 4090 / 2080 Ti / 3080 Ti / 5090 |
+| Qwen3.6-35B-A3B | 32B MoE | 11 GB | UD-IQ2_M | 256 (top-8) | **2.1-2.5 GB** | — | **46.8 t/s** (4090) | RTX 4090 / 2080 Ti / 3080 Ti / 5090 |
+| DeepSeek-V4-Flash | **157B MoE** | **85 GB** (3 分片) | UD-IQ2_M | 256 (top-6) | **8.3-9.1 GB** | **11-12 GB 封顶** | 0.89-2.22 t/s | RTX 2080 Ti / RTX 3080 |
+| Mixtral-8x7B | 47B MoE | ~16 GB | Q4_K_M | 8 (top-2) | 2.2-2.9 GB | — | 3.7 t/s* | RTX 4090（cache 测试口径） |
+| Qwen3-235B-A22B | 235B MoE | 81.7 GB | Q2_K | 256 (top-8) | 验证中 | — | TBD | — |
+
+\* Mixtral 为裸 llama-server cache 收益测试口径（专家 CPU 计算，非 host-buffer GPU 直算主路径），仅作参考。
+
+## 显存节省（host-buffer 专家 GPU 直算）
+
+| 模型 | 标准全量加载 | moe-l2 | 节省 | 速度保留 |
+|------|-------------|--------|------|----------|
+| DeepSeek-V2-Lite | 23.3 GB VRAM, 65 t/s | **1.6 GB, 37.5 t/s** | **93%** | 58% |
+| Qwen3.6-35B-A3B | 8GB 卡 OOM | **2.1 GB, 46.8 t/s** | — | ≈ 持平 |
+| DeepSeek-V4-Flash | 10-11GB 卡 OOM | **8.3-9.1 GB, 0.89-2.22 t/s** | — | 卡算力极限 |
+
+## 全链路实测（v3.1 固定专家数淘汰，RSS 封顶）
+
+**DeepSeek-V4-Flash（157B / 85GB，2080 Ti + RTX 3080 双卡）**
+
+| 场景 | RTX 3080 10GB | RTX 2080 Ti 11GB |
+|------|---------------|------------------|
+| 短对话 | 2.11 t/s | 0.89 t/s |
+| 追问 r1-r4 | 2.18-2.22 t/s | 1.02-1.07 t/s |
+| 长对话 (~1500 tok) | 1.78 t/s | 0.72 t/s |
+| Server RSS | 18.9 GB 封顶 | 11-12 GB 封顶 |
+| VRAM | 9.07 / 10 GB | 8.3-8.4 / 11 GB |
+
+**Qwen3.6-A3B / DS-V2-Lite（RTX 3080 10GB 同卡，裸 vs 全链路）**
+
+| 模型 | 裸 server | v3.1 全链路 | 淘汰影响 | RSS | VRAM |
+|------|-----------|------------|----------|-----|------|
+| Qwen3.6-35B-A3B | 8.77 t/s | 9.40 t/s | **+7%** | 4.5 GB | 2.3 GB |
+| DS-V2-Lite | 8.66 t/s | 10.21 t/s | **+18%** | 5.6 GB | 3.3 GB |
+
+## 多架构实测（三卡 × 双模型，bins-v0.2.0+，CUDA 12.8）
+
+| GPU | 架构 | DS-V2-Lite | Qwen3.6-A3B | VRAM |
+|-----|------|-----------|-------------|------|
+| RTX 2080 Ti | sm_75 | 6.89 t/s | 11.15 t/s | 1.0-2.4 GB |
+| RTX 3080 Ti | sm_86 | 12.25 t/s | 13.28 t/s | 1.1-2.2 GB |
+| RTX 5090 | sm_120a | 16.63 t/s | 9.71 t/s | 1.3-2.5 GB |
+| RTX 4090* | sm_89 | 37.5 t/s | 46.8 t/s | 1.6-2.1 GB |
+
+\* 4090 为单架构基线（CUDA 11.8，08-02），非多架构包实测。
+
+## 关键结论
+
+1. **显存与架构无关**：DS 1.0-1.8 GB、Qwen 2.1-2.5 GB，各代卡一致——8GB 卡余量 3-6 倍
+2. **v3.1 淘汰不掉速**：同卡对比全链路反而更快（Qwen +7%、DS +18%，L2 热专家预加载收益 > 淘汰开销）
+3. **V4 速度 = 卡算力极限**：0.7-2.2 t/s 是 IQ2_M 157B 模型在 2080 Ti / 3080 上的物理上限，非 offload 代价
+4. **157B 模型跑 16GB 内存机器**：V4 RSS 11-12GB 封顶（无淘汰 29GB），压缩比 ~7:1
+
+## 详细报告
+
+- [DeepSeek-V4-Flash 验证报告（157B，双卡全链路）](deepseek-v4-flash-verify-20260805.md)
+- [多架构三卡验证（2080 Ti / 3080 Ti / 5090）](multi-arch-three-gpu-benchmark.md)
+- [Qwen3.6-A3B IQ2_M 基准](qwen3.6-a3b-iq2m-benchmark.md)
+- [DeepSeek-V2-Lite Q2_K 基准](deepseek-v2-lite-q2k-benchmark.md)
+- [Cache / sched 层基准（DS / Qwen / Mixtral 三模型收益矩阵）](cache-sched-layer-benchmark.md)
+- [Host-buffer 设计决策（中英）](design-decisions.md)
