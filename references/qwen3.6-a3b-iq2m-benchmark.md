@@ -58,3 +58,31 @@
 - **三模型 cache 档位矩阵**：见 `cache-sched-layer-benchmark.md`
 - **host buffer 架构细节**：llama-model-loader.cpp 放开 mmap→host buffer 回退 + cli.py `GGML_OP_OFFLOAD_MIN_BATCH=1`
 - **数据飞轮**：proxy 真实流量攒样本 → 自动重训分类器（种子 111 + 真实 50 = 161 samples），标签质量提升
+
+---
+
+## 2026-08-07 更新：on-demand pin 主路径（速度再破纪录）
+
+> **on-demand pin**（lazy mmap 加载 + 首次触碰合并注册整个专家 tensor + A3 cache 2048 槽）取代 host buffer 成为主路径。**Qwen Gen 46.5 → 50.2 t/s（+8%），超过 pre-lazy host buffer 的 46.5。**
+
+### 实测（RTX 4090，2026-08-07）
+
+| 形态 | Gen t/s（短） | Gen t/s（长） | VRAM |
+|------|-------------|-------------|------|
+| host buffer（08-02） | 46.5 | — | 2147 MiB |
+| on-demand pin（whole） | 46.9 | 44.8 | ~8GB（含模型） |
+| **on-demand pin + cache 2048** | **50.2** | **49.8** | 2.9GB |
+| 多架构包（CUDA 12.8，sm_61-120a） | **51.5** | **51.6** | 2.9GB |
+
+### 机制
+
+1. **合并注册**：修复 CUDA 11.8 坑——`cudaMemcpyAsync` 源跨多个 `cudaHostRegister` 区间必崩（pintest6c 铁证）；改为 unregister 相邻区间 + register 单大区间（pintest6d 验证）
+2. **whole-tensor pin**（`MOEL2_WHOLE_PIN`，默认开）：copy_experts 首次触碰时注册整个专家 tensor，消除推理时新专家页 fault 读盘
+3. **A3 cache 2048 槽**（`EXPERT_CACHE_MAX_SLOTS`）：Qwen 短 46.9→50.2、长 44.8→49.8
+
+### 关键结论（2026-08-07）
+
+1. **Qwen 50.2 t/s 为当前最高纪录**（超 pre-lazy 46.5、host buffer 46.5）
+2. **2048 槽 cache 三模型通用增益**（Qwen +7~11% / DS +4% / V4 +6%），已随 v0.7.1 / bins-v0.3.1 发布
+3. **推荐配置**：`GGML_OP_OFFLOAD_MIN_BATCH=1` + `GGML_CUDA_EXPERT_CACHE=1`（cli.py 已内置）
+4. 详细排错链与数据：`/opt/data/moe-l2/历史记录文档/on-demand-pin-方案-交接-20260807.md`

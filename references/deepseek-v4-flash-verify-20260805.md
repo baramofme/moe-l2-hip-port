@@ -96,3 +96,27 @@
 - AutoDL 开机驱动 mismatch（内核 vs 库版本不一致）：修符号链接 `ln -sfn libcuda.so.580.<内核版> libcuda.so.1` 等
 - 架构核对用 CUDA 12.8 `cuobjdump --list-elf`（系统旧版误报）
 - proxy 非流式转发 httpx 超时 30s→600s（慢速模型必踩）
+
+---
+
+## 2026-08-07 更新：on-demand pin 主路径（4090 上 5 倍提速）
+
+> **on-demand pin**（lazy mmap + whole-tensor 合并注册 + A3 cache 2048 槽）在 RTX 4090 上把 V4 从 **1.7-2.0 t/s 拉到 10.1 t/s（5 倍）**。90GB 模型在 24GB 卡 + 1TB 内存机器上可交互使用。
+
+### 实测（RTX 4090 24GB，2026-08-07，裸 server 口径）
+
+| 形态 | Gen t/s | VRAM | RSS |
+|------|---------|------|-----|
+| lazy 无 pin（裸 server，08-05 测） | 1.71-1.98 | 9.1 GB | — |
+| on-demand pin（whole） | 9.5 | 8.4 GB | 80.9 GB |
+| **on-demand pin + cache 2048** | **10.1** | 17.4 GB | 82 GB |
+| cache 512 槽 | 9.29 | ~9GB | —（每 token 激活专家 >512，命中率≈0） |
+| cache 4096 槽 | OOM | — | —（17.6GB cache + 基础 8.4GB > 24GB） |
+
+### 关键结论（2026-08-07）
+
+1. **V4 4090 上 10.1 t/s（原 1.7-2.0 的 5 倍）**；GPU util 13% → 86%，**已近计算 bound**（再提速需优化 kernel/量化，非 cache）
+2. **2048 槽是 cache 平衡点**（512 无提升、4096 OOM），三模型通用增益
+3. **RSS 80.9GB（whole-pin 全量 fault）**——1TB 内存机器无压力；128GB 容器需淘汰机制（v3.1 + unregister）控制驻留
+4. 2080 Ti / 3080 上仍为 v3.1 全链路 0.89-2.22（卡算力极限），待 v0.3.1 多架构包复测
+5. 详细排错链：`/opt/data/moe-l2/历史记录文档/on-demand-pin-方案-交接-20260807.md`

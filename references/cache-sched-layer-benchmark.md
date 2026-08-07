@@ -70,3 +70,24 @@ DS 上 cache=0.25 已到顶（16 slots/层覆盖全部热专家），0.5/0.75/1.
 
 - 云机：`/root/llama.cpp-clean/ggml/src/ggml-backend.cpp`、`ggml-cuda/expert-cache.cuh/cu`、`ggml-cuda/ggml-cuda.cu`
 - 备份：云机 `/root/moe-l2-backups/sched-cache-fix-20260802/`，本地 `测试数据备份/a3on-fix-20260802/`
+
+---
+
+## 2026-08-07 更新：cache 上限 2048 槽（三模型通用增益）
+
+> 08-02 结论"Qwen/Mixtral 无收益不开"在 **EXPERT_CACHE_MAX_SLOTS 512 → 2048** 后被推翻：容量不足是原结论的主因（小模型专家少、512 槽够用所以之前测不出差异；V4 每 token 激活专家 >512 直接 LRU 抖动）。
+
+### 三模型实测（RTX 4090，2026-08-07，cache=1.0）
+
+| 模型 | 无 cache | + cache 2048 | 提升 | GPU util 变化 |
+|------|---------|-------------|------|--------------|
+| Qwen3.6-A3B | 46.9 / 44.8 | **50.2 / 49.8** | +7% / +11% | — |
+| DS-V2-Lite | 36.4 | **37.9 / 37.2** | +4% | — |
+| V4-Flash | 9.5 | **10.1** | +6% | 13% → 86%（近计算 bound） |
+
+### 结论（2026-08-07）
+
+1. **2048 槽是 V4 平衡点**：512 槽无提升（每 token 激活专家 >512）、4096 槽 OOM（17.6GB cache + 基础 8.4GB > 24GB）
+2. **推荐配置**：`GGML_CUDA_EXPERT_CACHE=1`（cli.py 已内置），所有模型开
+3. V4 GPU util 86% 已近计算 bound——cache 已把拷贝瓶颈解决，再提速需优化 kernel/量化
+4. 详细排错链与数据：`/opt/data/moe-l2/历史记录文档/on-demand-pin-方案-交接-20260807.md`

@@ -51,3 +51,25 @@
 
 - **三模型 cache 档位矩阵**：见 `cache-sched-layer-benchmark.md`
 - **host buffer 架构细节**：llama-model-loader.cpp 放开 mmap→host buffer 回退 + cli.py `GGML_OP_OFFLOAD_MIN_BATCH=1`
+
+---
+
+## 2026-08-07 更新：on-demand pin 主路径
+
+> **on-demand pin**（lazy mmap + whole-tensor 合并注册 + A3 cache 2048 槽）取代 host buffer。**DS Gen 37.5 → 37.9 t/s（+4%，超过 37.5 目标）。**
+
+### 实测（RTX 4090，2026-08-07）
+
+| 形态 | Gen t/s（短） | Gen t/s（长） | VRAM |
+|------|-------------|-------------|------|
+| host buffer + cache 0.25（08-02） | 39.2 | — | 1625 MiB |
+| on-demand pin（whole） | 36.4 | — | ~2GB |
+| **on-demand pin + cache 2048** | **37.9** | **37.2** | 2.0GB |
+| 多架构包（CUDA 12.8，sm_61-120a） | **39.0** | — | — |
+
+### 关键结论（2026-08-07）
+
+1. **DS 37.9 t/s 达标**（目标 37.5），多架构包 39.0 t/s（CUDA 12.8 编译器红利）
+2. **2048 槽 cache 三模型通用增益**（Qwen +7~11% / DS +4% / V4 +6%）
+3. **推荐配置**：`GGML_OP_OFFLOAD_MIN_BATCH=1` + `GGML_CUDA_EXPERT_CACHE=1`（cli.py 已内置）
+4. 详细排错链与数据：`/opt/data/moe-l2/历史记录文档/on-demand-pin-方案-交接-20260807.md`
