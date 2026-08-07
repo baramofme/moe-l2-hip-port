@@ -52,13 +52,15 @@ user → moe-l2 proxy (localhost:11435)
 
 ### Real-world benchmark
 
-| Your GPU | Normally fits | **With moe-l2** |
-|----------|--------------|-----------------|
-| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ |
-| **8 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** |
-| 12 GB | 13B dense | DeepSeek-V2 (236B MoE) ✅ |
-| 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ✅ |
-| 10-11 GB | — | **DeepSeek-V4-Flash (157B MoE, 85 GB file) ✅** |
+| Your GPU | Normally fits | **With moe-l2** | **Measured speed** (RTX 4090) |
+|----------|--------------|-----------------|-------------------------------|
+| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **37.9 t/s** |
+| **8 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** | **50.2 t/s** |
+| 12 GB | 13B dense | DeepSeek-V2 (236B MoE) ⚠️ TBD | — |
+| 24 GB | 34B dense | DeepSeek-V2 (236B MoE) ⚠️ TBD | — |
+| 10-11 GB | — | **DeepSeek-V4-Flash (157B MoE, 85 GB file) ✅** | **10.1 t/s** |
+
+> Speed = RTX 4090 measured (2026-08-07, on-demand pin + A3 cache 2048, multi-arch build); 2080 Ti: Qwen 24.5 t/s, DS 6.89 t/s, V4 0.89-1.07 t/s. 236B-class models still under verification. See [models-benchmark.md](references/models-benchmark.md).
 
 Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.9 GB VRAM (on-demand pin experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — verified on 2080 Ti (0.89-1.07 t/s) and RTX 3080 (2.11-2.22 t/s), with expert-page eviction keeping RSS capped. Full report: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **All measured models: [models-benchmark.md](references/models-benchmark.md)**
 

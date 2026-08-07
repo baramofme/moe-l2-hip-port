@@ -9,13 +9,15 @@
 
 > ⭐ **觉得有用？点个 Star** —— 让更多需要的人发现它。[★ 去 GitHub 点赞](https://github.com/yalun753/moe-l2)
 
-| 你的显卡 | 正常能跑 | **用了 moe-l2** |
-|----------|---------|-----------------|
-| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ |
-| **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** |
-| 12 GB | 13B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
-| 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
-| 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85GB 文件）✅** |
+| 你的显卡 | 正常能跑 | **用了 moe-l2** | **实测速度**（RTX 4090） |
+|----------|---------|-----------------|----------------------|
+| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **37.9 t/s** |
+| **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** | **50.2 t/s** |
+| 12 GB | 13B 稠密模型 | DeepSeek-V2 (236B MoE) ⚠️ 待验证 | — |
+| 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ⚠️ 待验证 | — |
+| 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85GB 文件）✅** | **10.1 t/s** |
+
+> 速度 = RTX 4090 实测（2026-08-07，on-demand pin + A3 cache 2048，多架构包）；2080 Ti：Qwen 24.5 t/s、DS 6.89 t/s、V4 0.89-1.07 t/s。236B 级模型尚在验证中。详见 [models-benchmark.md](references/models-benchmark.md)。
 
 **DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——RTX 4090 实测 **10.1 t/s**（on-demand pin + A3 cache，显存 17.4GB）；2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
 
