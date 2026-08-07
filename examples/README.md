@@ -17,7 +17,7 @@
 | 模式 | 参数 | 行为 |
 |------|------|------|
 | **OG**（原始模式） | `--no-mmap -ngl 99` | 把整个模型加载到 GPU 显存 |
-| **moe-l2**（host-buffer） | 默认 mmap + `GGML_OP_OFFLOAD_MIN_BATCH=1` | 专家驻留 CPU pinned 内存（零显存），调度器每步只把**激活的专家**拷到 GPU，GPU 快路径直算 |
+| **moe-l2**（on-demand pin） | 默认 mmap + `GGML_OP_OFFLOAD_MIN_BATCH=1` + `GGML_CUDA_EXPERT_CACHE=1` | 专家惰性 mmap + 首次触碰注册（零显存），调度器每步只把**激活的专家**拷到 GPU，热专家驻留 cache |
 | **cache**（+sched-cache） | 上述 + `GGML_CUDA_EXPERT_CACHE=0.25` | 热专家留在 GPU（D2D 拷贝，免 PCIe），未命中才从 host buffer 换入 |
 
 ### 怎么跑
@@ -42,10 +42,10 @@ bash examples/demo_a3_compression.sh
   RESULTS SUMMARY
 ==============================================
 
-                        OG (full GPU)     host-buffer     host-buffer+cache
+                        OG (full GPU)     moe-l2         moe-l2+cache
   ────────────  ────────────────────  ────────────────────  ────────────────────
   VRAM used                6635 MB             1625 MB              1625 MB
-  Speed                    65 t/s             37.5 t/s             39.2 t/s
+  Speed                    65 t/s             37.9 t/s             50.2 t/s
   Savings                          -       5010 MB (4.08x)                -
 ```
 
