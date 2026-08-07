@@ -17,7 +17,7 @@
 | 24 GB | 34B 稠密模型 | DeepSeek-V2 (236B MoE) ✅ |
 | 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85GB 文件）✅** |
 
-**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
+**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——RTX 4090 实测 **10.1 t/s**（on-demand pin + A3 cache，显存 17.4GB）；2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
 
 **一行安装（Linux x86_64 + NVIDIA 显卡）：**
 
@@ -61,14 +61,14 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 | 模式 | GPU 显存 | 速度 | 意味着什么 |
 |------|----------|------|-----------|
 | 标准（全 expert 在 GPU） | 23.3 GB | 65 t/s | 需要 24 GB 显卡 |
-| **moe-l2**（host-buffer 专家，GPU 计算） | **1.6 GB** | **DS 37.5 t/s · Qwen 46.8 t/s** | **4 GB 卡也能跑** |
+| **moe-l2**（host-buffer 专家，GPU 计算） | **1.6-2.9 GB** | **DS 37.9 t/s · Qwen 50.2 t/s** | **4 GB 卡也能跑** |
 | **节省** | **93% 显存** | 全 GPU 速度的 ~58% | 腾出 ~20 GB 做别的 |
 
 不开 moe-l2，8 GB 显卡**根本无法加载这个模型**——直接 OOM。开了之后 32B MoE 只占 ~2.1 GB（host-buffer 专家，GPU 计算），还剩 6 GB 干别的。
 
-> 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试。host-buffer 升级后：专家驻留 CPU pinned 内存（零显存），调度器每步只把**激活的专家**拷到 GPU 直算。DS-V2-Lite **12.5 → 37.5 t/s**（+200%），Qwen3.6-A3B **10 → 46.8 t/s**（+370%）。加上 sched-cache 层后 DS prompt 处理 **99 → 308 t/s**（+211%，cache=0.25，VRAM 仍 1.6 GB）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer](references/cache-sched-layer-benchmark.md) · **为什么是 host-buffer？完整方案演进史：[design-decisions.md](references/design-decisions.md) / [design-decisions_EN.md (English)](references/design-decisions_EN.md)**
+> 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试。**2026-08-07 主路径升级为 on-demand pin**（mmap 惰性加载 + 首次触碰合并注册整个专家 tensor + A3 cache 2048 槽）：专家驻留 CPU RAM（零显存），调度器每步只把**激活的专家**拷到 GPU 直算，热专家缓存在 GPU 显存。DS-V2-Lite **12.5 → 37.9 t/s**（+200%），Qwen3.6-A3B **10 → 50.2 t/s**（+400%，超 pre-lazy 46.5）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer](references/cache-sched-layer-benchmark.md) · [models-benchmark](references/models-benchmark.md) · **为什么是 host-buffer？完整方案演进史：[design-decisions.md](references/design-decisions.md) / [design-decisions_EN.md (English)](references/design-decisions_EN.md)**
 
-### 多架构二进制（bins-v0.3.0，2026-08-05）
+### 多架构二进制（bins-v0.3.1，2026-08-05）
 
 **一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。v0.3.0 新增**专家页淘汰 v3.1**（`MOE_L2_LRU_MAX_EXPERTS=N`：只保留最热的 N 个专家常驻，冷专家溢出即淘汰——Qwen 掉速仅 -2%，远好于 v2 的 -24%），全链路实测 Qwen RSS 封顶 5GB、V4-Flash（2080 Ti）11-12GB。含 A3 patch + host-buffer + libnccl.so.2 + cuda-libs。
 
@@ -77,7 +77,7 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 | RTX 2080 Ti | sm_75（Turing） | 6.89 t/s | 11.15 t/s | ~1.0-2.4 GB |
 | RTX 3080 Ti | sm_86（Ampere） | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
 | RTX 5090 | sm_120a（Blackwell） | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
-| RTX 4090* | sm_89（Ada） | 37.5 t/s | 46.8 t/s | 1.6-2.1 GB |
+| RTX 4090* | sm_89（Ada） | 37.9 t/s | 50.2 t/s | 1.6-2.9 GB |
 
 \* 4090 为单架构 build（CUDA 11.8）基线数据（8 月 2 日），非多架构包实测。
 
@@ -171,7 +171,7 @@ pip install moe-l2
 ```bash
 moe-l2 download-bins
 ```
-从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.3.0，约 1.9 GB 多架构全兼容包，含 cuda-libs 与 libnccl.so.2）。
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.3.1，约 1.9 GB 多架构全兼容包，含 cuda-libs 与 libnccl.so.2）。
 
 ### 3. 启动
 
@@ -213,7 +213,7 @@ moe-l2 stats
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.3.0 约 1.9 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，cuda-libs 含 libnccl.so.2），运行时通过 `moe-l2 download-bins` 获取。
+> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.3.1 约 1.9 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，cuda-libs 含 libnccl.so.2），运行时通过 `moe-l2 download-bins` 获取。
 
 ---
 
@@ -241,12 +241,12 @@ moe-l2 stats
 | 指标 | 标准 | moe-l2 |
 |------|------|--------|
 | Prompt 处理（DS-V2-Lite） | 110 t/s | 99 t/s · **308 t/s**（sched-cache=0.25） |
-| 生成速度（DS-V2-Lite） | 65 t/s | 37.5 t/s · 39.2 t/s（sched-cache=0.25） |
-| 生成速度（Qwen3.6-A3B） | — | 46.8 t/s |
+| 生成速度（DS-V2-Lite） | 65 t/s | 37.9 t/s · 39.2 t/s（sched-cache=0.25） |
+| 生成速度（Qwen3.6-A3B） | — | 50.2 t/s |
 | 显存占用 | 23.3 GB | **1.6 GB** |
 | 模型大小 / 显存比 | 0.26× | **3.9×** |
 
-速度取舍是可预期的：专家驻留 CPU pinned 内存（host buffer，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-02 升级后 DS-V2-Lite 生成 37.5 t/s（+200%）、Qwen3.6-A3B 46.8 t/s（+370%）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%）。
+速度取舍是可预期的：专家驻留 CPU RAM（mmap 惰性 + on-demand pin，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-07 on-demand pin 主路径：DS-V2-Lite 生成 37.9 t/s（+200%）、Qwen3.6-A3B 50.2 t/s（+400%，超 pre-lazy 46.5）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%）。
 
 ---
 
@@ -279,6 +279,7 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 - ✅ 透明代理（HTTP/SSE 转发）
 - ✅ CLI（start/stats/collect/embed-map/download-bins，自动模型检测，GPU 模式）
 - ✅ host-buffer 专家 GPU 直算（2026-08-02）：DS-V2-Lite 12.5 → 37.5 t/s、Qwen3.6-A3B 10 → 46.8 t/s，VRAM 1.6 / 2.1 GB — 专家驻留 CPU pinned 零显存，调度器只拷激活专家
+- ✅ **on-demand pin 主路径（2026-08-07）**：mmap 惰性加载 + 首次触碰合并注册整个专家 tensor + A3 cache 2048 槽 → Qwen **50.2** / DS **37.9** / V4 **10.1** t/s（4090），V4 从 1.7-2.0 提升 5 倍；修复 CUDA 11.8 跨 register 区间拷贝崩溃
 - ✅ cache 挂 sched 拷贝层（2026-08-02）：DS 类模型 Prompt 99 → 308 t/s（+211%，cache=0.25，VRAM 不变）；Qwen/Mixtral 无收益不开
 - ✅ **DeepSeek-V4-Flash（157B MoE）验证通过（2026-08-05）**：85GB 三片 GGUF 在 2080 Ti（11GB）和 RTX 3080（10GB）上跑通——VRAM 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶（`MOE_L2_LRU_MAX_EXPERTS` 固定专家数 LRU）、多分片 GGUF 解析修复已随 0.7.0 发布。速度 0.89-2.22 t/s（卡算力极限）。[完整报告](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI 包（`moe-l2`）

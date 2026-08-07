@@ -43,7 +43,7 @@ _GITHUB_REPO = "yalun753/moe-l2"
 _BINS_ASSET_URL = (
     "https://github.com/{repo}/releases/download/{tag}/llama_bins.tar.gz"
 )
-_DEFAULT_BINS_TAG = "bins-v0.3.0"
+_DEFAULT_BINS_TAG = "bins-v0.3.1"
 
 # Where the bundled llama-server lives (relative to this file)
 _BUNDLE_DIR = Path(__file__).resolve().parent / "bin"
@@ -210,9 +210,17 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
     # sched's MoE expert-copy optimization copies only activated experts → GPU fast
     # path. Measured: DS 12.5→37.5 t/s, Qwen 10→46.8 t/s (RTX 4090, 2026-08-02).
     env["GGML_OP_OFFLOAD_MIN_BATCH"] = "1"
+    # [moe-l2 2026-08-07] A3 expert cache (2048 槽上限)：热专家缓存在 GPU 显存，
+    # 省重复 PCIe 拷贝。实测三模型通用增益：Qwen 50.2 / DS 37.9 / V4 10.1 t/s（4090）。
+    env["GGML_CUDA_EXPERT_CACHE"] = "1"
     # 门控在线自适应（P2 ④）：输出实时路由日志（EXPERT|Lx|Ty: [...]），
     # 由 proxy/gate 解析后动态调缓存优先级
     env["LLAMA_EXPERT_LOG"] = "1"
+    # [moe-l2 2026-08-07 修订] on-demand pin 已编译进二进制（ggml_cuda_expert_pin_host：
+    # 首次触碰时合并注册整个专家 tensor，MOEL2_WHOLE_PIN 默认开），无需环境变量。
+    # 旧逻辑（GGML_CUDA_REGISTER_HOST=1 按模型大小开关）基于"lazy+REGISTER_HOST=46.7"
+    # 的错误前提，实测该组合只有 11.6 t/s，已删除（备份 cli-20260807-register-host-前.py）。
+    # 新方案实测：Qwen 50.2 / DS 37.9 / V4 10.1 t/s（4090，GGML_CUDA_EXPERT_CACHE=1）。
     # mmap default: expert tensors stay in CPU RAM (host buffer), GPU cuBLAS computes them on demand
 
     cmd = [

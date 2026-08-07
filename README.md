@@ -67,12 +67,12 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 | Mode | GPU VRAM | Gen speed | What it means |
 |------|----------|-----------|---------------|
 | Standard (all experts on GPU) | 23.3 GB | 65 t/s | Needs a 24 GB card |
-| **moe-l2** (host-buffer experts, GPU compute) | **1.6 GB** | **DS 37.5 t/s · Qwen 46.8 t/s** | **Fits in 4-8 GB cards** |
+| **moe-l2** (host-buffer experts, GPU compute) | **1.6-2.9 GB** | **DS 37.9 t/s · Qwen 50.2 t/s** | **Fits in 4-8 GB cards** |
 | **Savings** | **93% less** | ~58% of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
 
-> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with the host-buffer build: experts live in CPU pinned memory (zero VRAM), the scheduler copies only the **activated** experts to GPU each step. DS-V2-Lite **12.5 → 37.5 t/s** (+200%), Qwen3.6-A3B **10 → 46.8 t/s** (+370%), VRAM unchanged at 1.6 / 2.1 GB. Adding the sched-cache layer pushes DS prompt processing **99 → 308 t/s** (+211%) at cache=0.25, VRAM still 1.6 GB. Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md) · **Why host-buffer? Full approach history: [design-decisions_EN.md](references/design-decisions_EN.md) / [design-decisions.md (中文)](references/design-decisions.md)**
+> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. **2026-08-07 main path upgraded to on-demand pin** (lazy mmap load + first-touch merge-registration of the whole expert tensor + A3 cache 2048 slots): experts stay in CPU RAM (zero VRAM), the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **12.5 → 37.9 t/s** (+200%), Qwen3.6-A3B **10 → 50.2 t/s** (+400%, beats pre-lazy 46.5). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md) · [models-benchmark.md](references/models-benchmark.md) · **Why host-buffer? Full approach history: [design-decisions_EN.md](references/design-decisions_EN.md) / [design-decisions.md (中文)](references/design-decisions.md)**
 
-### Multi-architecture binaries (bins-v0.3.0, 2026-08-05)
+### Multi-architecture binaries (bins-v0.3.1, 2026-08-05)
 
 One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. v0.3.0 adds **expert-page eviction v3.1** (`MOE_L2_LRU_MAX_EXPERTS=N`): keep only the N hottest experts resident and evict the coldest overflow — near-zero slowdown (Qwen -2% vs -24% on v2), full-chain RSS capped (Qwen 5 GB, V4-Flash 11-12 GB on 2080 Ti). Includes A3 patch + host-buffer + libnccl.so.2 + cuda-libs.
 
@@ -81,7 +81,7 @@ One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-
 | RTX 2080 Ti | sm_75 (Turing) | 6.89 t/s | 11.15 t/s | ~1.0-2.4 GB |
 | RTX 3080 Ti | sm_86 (Ampere) | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
 | RTX 5090 | sm_120a (Blackwell) | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
-| RTX 4090* | sm_89 (Ada) | 37.5 t/s | 46.8 t/s | 1.6-2.1 GB |
+| RTX 4090* | sm_89 (Ada) | 37.9 t/s | 50.2 t/s | 1.6-2.9 GB |
 
 \* 4090 为单架构 build（CUDA 11.8）基线数据（8 月 2 日），非多架构包实测。
 
@@ -215,7 +215,7 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU; spawns bundled host-buffer llama-server on 11436)
 
-> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.9 GB multi-architecture on the `bins-v0.3.0` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs incl. libnccl.so.2). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.9 GB multi-architecture on the `bins-v0.3.1` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs incl. libnccl.so.2). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 
@@ -229,8 +229,8 @@ Options:
 | Metric | Standard | With moe-l2 |
 |--------|----------|-------------|
 | Prompt processing (DS-V2-Lite) | 110 t/s | 99 t/s · **308 t/s** (sched-cache=0.25) |
-| Generation speed (DS-V2-Lite) | 65 t/s | 37.5 t/s · 39.2 t/s (sched-cache=0.25) |
-| Generation speed (Qwen3.6-A3B) | — | 46.8 t/s |
+| Generation speed (DS-V2-Lite) | 65 t/s | 37.9 t/s · 39.2 t/s (sched-cache=0.25) |
+| Generation speed (Qwen3.6-A3B) | — | 50.2 t/s |
 | VRAM used (DS-V2-Lite) | 23.3 GB | **1.6 GB** |
 | Model size / VRAM ratio | 0.26× | **3.9×** |
 
@@ -289,6 +289,7 @@ AirLLM is a general-purpose layer-offload scheme for very large models. Its sche
 - ✅ Transparent proxy (HTTP/SSE forwarding)
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
 - ✅ Host-buffer expert GPU fast path (2026-08-02): DS-V2-Lite 12.5 → 37.5 t/s, Qwen3.6-A3B 10 → 46.8 t/s at 1.6 / 2.1 GB VRAM — experts in CPU pinned memory, only activated experts copied to GPU
+- ✅ **On-demand pin main path (2026-08-07)**: lazy mmap load + first-touch merge-registration of the whole expert tensor + A3 cache 2048 slots → Qwen **50.2** / DS **37.9** / V4 **10.1** t/s on 4090 (V4 5× faster than 1.7-2.0); fixes CUDA 11.8 cross-register-range copy crash
 - ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090 (2026-08-02, sched-cache): cache benefit = expert size × hit rate — DS-V2-Lite (1.55 MB, top-6) gets Prompt +211% / Gen +5% at cache=0.25; Qwen (~1 MB) and Mixtral (252 MB, top-2) get no gain. Recommended: cache=0.25 for DS-class, off otherwise.
 - ✅ **DeepSeek-V4-Flash (157B MoE) verified (2026-08-05)**: 85 GB 3-shard GGUF runs on 2080 Ti (11 GB) and RTX 3080 (10 GB) — VRAM 8.3-9.1 GB, RSS capped by expert-page eviction v3.1 (fixed-expert-count LRU, `MOE_L2_LRU_MAX_EXPERTS`), multi-shard GGUF parsing fix shipped. Speed 0.89-2.22 t/s (GPU compute bound). [Full report](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI package (`moe-l2`)
