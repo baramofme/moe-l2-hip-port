@@ -89,7 +89,7 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 |---|---|
 | ![Qwen 显存对比](examples/demo-assets/fig1-qwen-vram.png) | ![DS 显存对比](examples/demo-assets/fig2-ds-vram.png) |
 
-一句话总结：**显存省 93% · 速度保留 58% · 模型/显存比 3.9×** —— 8 GB 卡跑出原本 24 GB 卡的效果：
+一句话总结：**显存省 93% · 速度保留 58% · 模型/显存比 3.1×** —— 8 GB 卡跑出原本 24 GB 卡的效果（图为 2026-08-02 host-buffer 构建实测；2026-08-07 on-demand pin 最新：DS 37.9 t/s @ 2.0 GB / Qwen 50.2 t/s @ 2.9 GB）：
 
 ![moe-l2 汇总](examples/demo-assets/fig3-summary.png)
 
@@ -174,7 +174,7 @@ pip install moe-l2
 ```bash
 moe-l2 download-bins
 ```
-从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.3.1，约 1.9 GB 多架构全兼容包，含 cuda-libs 与 libnccl.so.2）。
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.3.1，约 1.9 GB 多架构全兼容包，含 cuda-libs）。
 
 ### 3. 启动
 
@@ -216,7 +216,7 @@ moe-l2 stats
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.3.1 约 1.9 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，cuda-libs 含 libnccl.so.2），运行时通过 `moe-l2 download-bins` 获取。
+> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.3.1 约 1.9 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，含 cuda-libs），运行时通过 `moe-l2 download-bins` 获取。
 
 ---
 
@@ -224,8 +224,8 @@ moe-l2 stats
 
 1. 你的 prompt 到达 moe-l2 代理
 2. 领域预测器分类（代码生成 → 数学 → 中文技术 ……）
-3. 专家权重驻留 CPU pinned 内存（host buffer，**零显存**）——不再整体塞进 GPU
-4. llama.cpp 调度器每步只把**激活的专家**拷到 GPU 直算（cuBLAS）
+3. 专家权重 lazy mmap 驻留 CPU RAM（**零显存**），首次激活即 pinned（on-demand pin）——不再整体塞进 GPU
+4. GPU 经 PCIe DMA 直读激活专家（cuBLAS），热专家驻留 VRAM（A3 LRU 2048 槽），冷页 v3.1 淘汰
 5. 可选 sched-cache（`GGML_CUDA_EXPERT_CACHE=0.25`）：命中热专家走 D2D 免 PCIe，DS 类模型 Prompt +211%
 
 ---
@@ -246,8 +246,8 @@ moe-l2 stats
 | Prompt 处理（DS-V2-Lite） | 110 t/s | 99 t/s · **308 t/s**（sched-cache=0.25） |
 | 生成速度（DS-V2-Lite） | 65 t/s | 37.9 t/s · 39.2 t/s（sched-cache=0.25） |
 | 生成速度（Qwen3.6-A3B） | — | 50.2 t/s |
-| 显存占用 | 23.3 GB | **1.6 GB** |
-| 模型大小 / 显存比 | 0.26× | **3.9×** |
+| 显存占用 | 23.3 GB | **2.0 GB** |
+| 模型大小 / 显存比 | 0.26× | **3.1×** |
 
 速度取舍是可预期的：专家驻留 CPU RAM（mmap 惰性 + on-demand pin，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-07 on-demand pin 主路径：DS-V2-Lite 生成 37.9 t/s（+200%）、Qwen3.6-A3B 50.2 t/s（+400%，超 pre-lazy 46.5）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%）。
 
