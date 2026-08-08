@@ -6,6 +6,24 @@ Format: Keep a Changelog 1.1 style — Added / Changed / Fixed.
 
 ---
 
+## [0.7.2] - 2026-08-09
+
+### Added
+- **Dynamic pin set (low-memory mode)** — opt-in via `MOE_L2_LRU=1`: register only the activated experts (per-expert group registration) instead of the whole expert tensor; the LRU evictor unregisters + madvises cold experts; layered pin (`MOE_L2_PIN_LAYERS`) keeps universal/sparse layers resident forever (V4 L0-L2 + sparse layers = ~5.4 GB free)
+- Measured on RTX 4090 / DeepSeek-V4-Flash (85 GB): RSS **84 GB → 17-24 GB** (`MOE_L2_LRU_MAX_EXPERTS` 2000 ≈ 17 GB / 12000 ≈ 24 GB); speed 4-5.3 t/s (V4 routes extremely wide — new experts pay a ~2.1 ms first-touch page-fault = 0.43 ms page-lock + 1.7 ms read; verified physical limit: WILLNEED prefetch ineffective, group-batching ineffective, staged copy slower)
+- bins-v0.3.2 multi-arch binaries (sm_61/75/86/89/120a, CUDA 12.8, no NCCL)
+
+### Changed
+- **Default remains whole-pin** (v0.3.1 speed baseline — verified no regression on 2080 Ti: Qwen 16.88 vs 16.94 t/s); dynamic pin set is opt-in low-memory mode (~20% slower on Qwen, ~50% on V4)
+
+### Fixed
+- copy_experts pin length now constant (es+padding) so the explicit pin and the set_tensor_async fallback pin agree — previously every copy re-unregistered/re-registered (re-faulting) experts
+- pin range merge only on overlap (shared page), not adjacency — adjacency merging made the pinned chain grow without bound (93 s/turn storm)
+- unpin simplified (drop the whole chain, no re-register segments) — segment re-registration fragmented the registry (was 378 µs/pin, tens of thousands of ranges)
+- removed whole-tensor pin in the mul_mat_id A3 path (would re-pin all 82 GB when A3 is enabled)
+
+---
+
 ## [0.7.1] - 2026-08-07
 
 ### Added
