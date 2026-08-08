@@ -28,9 +28,24 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 > We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. **2026-08-07 main path upgraded to on-demand pin** (lazy mmap load + first-touch merge-registration of the whole expert tensor + A3 cache 2048 slots): experts stay in CPU RAM (zero VRAM), the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **12.5 → 37.9 t/s** (+200%), Qwen3.6-A3B **10 → 50.2 t/s** (+400%, beats pre-lazy 46.5). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md) · [models-benchmark.md](references/models-benchmark.md) · **Why host-buffer? Full approach history: [design-decisions_EN.md](references/design-decisions_EN.md) / [design-decisions.md (中文)](references/design-decisions.md)**
 
-### Multi-architecture binaries (bins-v0.3.1, 2026-08-05)
+### Low-memory mode: dynamic pin set (2026-08-09)
 
-One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.3.1 includes the **on-demand pin main path** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + A3 cache 2048 slots + cuda-libs (no libnccl — not needed for single-GPU).
+The default on-demand pin registers the **whole expert tensor** on first touch — fastest (DeepSeek-V4-Flash 10.1 t/s) but pins ~82 GB of expert pages in RAM for 85 GB models. For memory-constrained machines, **dynamic pin set** registers only the experts actually activated (per-expert, group-registered), and the LRU evictor unregisters + madvises cold experts. Measured on RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M (85 GB): **RSS 84 GB → 17-24 GB** (configurable via `MOE_L2_LRU_MAX_EXPERTS`), speed 4-5 t/s (new experts pay a first-touch page-fault; V4 routes extremely wide — a 30-turn session touches ~29 GB of distinct experts). Small MoE models (Qwen3.6-A3B / DS-V2-Lite) keep full speed — their working sets fit any budget.
+
+Enable (example, 32 GB machine):
+
+```bash
+LLAMA_EXPERT_LOG=1 MOE_L2_LRU=1 MOE_L2_LRU_MAX_EXPERTS=12000 \
+MOE_L2_EVICT_MB=20000 MOE_L2_EVICT_INTERVAL=4 \
+MOE_L2_PIN_LAYERS=0-2,14-20,36-37 GGML_OP_OFFLOAD_MIN_BATCH=1 \
+llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
+```
+
+`MOE_L2_PIN_LAYERS` pins universal/sparse layers forever (L0-L2 + sparse layers = ~5.4 GB free lunch on V4). Tune `MOE_L2_LRU_MAX_EXPERTS`: 2000 ≈ 17 GB RSS (tight, slower) / 12000 ≈ 24 GB RSS (≈5.3 t/s on V4) / omit to disable eviction. Trade-off summary: **whole-pin** = fastest (10.1 t/s V4) at 82 GB RAM; **dynamic pin** = 17-24 GB RAM at 4-5 t/s V4 (small models unaffected).
+
+### Multi-architecture binaries (bins-v0.3.2, 2026-08-09)
+
+One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.3.2 includes the **on-demand pin main path** + **dynamic pin set (low-memory mode)** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + layered pin (`MOE_L2_PIN_LAYERS`) + A3 cache 2048 slots + cuda-libs (no libnccl — not needed for single-GPU).
 
 | GPU | Architecture | DS-V2-Lite gen | Qwen3.6-A3B gen | VRAM |
 |-----|-------------|----------------|-----------------|------|
@@ -39,7 +54,7 @@ One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-
 | RTX 5090 | sm_120a (Blackwell) | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
 | RTX 4090* | sm_89 (Ada) | 39.0 t/s | 51.5 t/s | 1.6-2.9 GB |
 
-\* 4090 measured with the multi-arch package (2026-08-07, on-demand pin + cache 2048, CUDA 12.8); 2080 Ti / 3080 Ti / 5090 rows are v3.1 multi-arch (bins-v0.3.0). Qwen single-turn 24.5 t/s on 2080 Ti (bins-v0.3.1, 2x vs old host-buffer 11.15).
+\* 4090 measured with the multi-arch package (2026-08-07, on-demand pin + cache 2048, CUDA 12.8); 2080 Ti / 3080 Ti / 5090 rows are v3.1 multi-arch (bins-v0.3.0). Qwen single-turn 24.5 t/s on 2080 Ti (bins-v0.3.2, 2x vs old host-buffer 11.15).
 
 > Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). Note: SM120a (RTX 50) kernel efficiency in llama.cpp 76f46ad is not yet mature — RTX 5090 shows only +36% over 3080 Ti on DS and −27% on Qwen; a newer llama.cpp rebuild should improve 50-series speed. Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md) · **DeepSeek V4 Flash (157B) dual-GPU run: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)**
 
@@ -217,7 +232,7 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU; spawns bundled on-demand pin llama-server on 11436)
 
-> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.9 GB multi-architecture on the `bins-v0.3.1` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.9 GB multi-architecture on the `bins-v0.3.2` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 

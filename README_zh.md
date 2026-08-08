@@ -68,9 +68,24 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 > 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试。**2026-08-07 主路径升级为 on-demand pin**（mmap 惰性加载 + 首次触碰合并注册整个专家 tensor + A3 cache 2048 槽）：专家驻留 CPU RAM（零显存），调度器每步只把**激活的专家**拷到 GPU 直算，热专家缓存在 GPU 显存。DS-V2-Lite **12.5 → 37.9 t/s**（+200%），Qwen3.6-A3B **10 → 50.2 t/s**（+400%，超 pre-lazy 46.5）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer](references/cache-sched-layer-benchmark.md) · [models-benchmark](references/models-benchmark.md) · **为什么是 host-buffer？完整方案演进史：[design-decisions.md](references/design-decisions.md) / [design-decisions_EN.md (English)](references/design-decisions_EN.md)**
 
-### 多架构二进制（bins-v0.3.1，2026-08-05）
+### 低内存模式：动态 pin 集合（2026-08-09）
 
-**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.3.1 含 **on-demand pin 主路径** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）。
+默认 on-demand pin 首次触碰时注册**整个专家 tensor**——最快（DeepSeek-V4-Flash 10.1 t/s），但 85GB 模型会把 ~82GB 专家页钉在内存。内存受限机器用 **动态 pin 集合**：只注册实际激活的专家（逐专家、按连续组注册），LRU 淘汰器把冷专家 unregister + madvise 释放。RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M（85GB）实测：**RSS 84GB → 17-24GB**（由 `MOE_L2_LRU_MAX_EXPERTS` 调节），速度 4-5 t/s（新专家首次触碰要付一次缺页读盘；V4 路由极分散——30 轮会话会触及 ~29GB 不同专家）。小 MoE 模型（Qwen3.6-A3B / DS-V2-Lite）工作集小，**保持满速**。
+
+开启（32GB 内存机器示例）：
+
+```bash
+LLAMA_EXPERT_LOG=1 MOE_L2_LRU=1 MOE_L2_LRU_MAX_EXPERTS=12000 \
+MOE_L2_EVICT_MB=20000 MOE_L2_EVICT_INTERVAL=4 \
+MOE_L2_PIN_LAYERS=0-2,14-20,36-37 GGML_OP_OFFLOAD_MIN_BATCH=1 \
+llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
+```
+
+`MOE_L2_PIN_LAYERS` 把通用层/稀疏层永久 pin（V4 上 L0-L2 + 稀疏层 = ~5.4GB 免费午餐）。调 `MOE_L2_LRU_MAX_EXPERTS`：2000 ≈ 17GB RSS（紧，较慢）/ 12000 ≈ 24GB RSS（V4 约 5.3 t/s）/ 不设 = 关闭淘汰。**权衡总结**：whole-pin = 最快（V4 10.1 t/s）但 82GB 内存；动态 pin = 17-24GB 内存但 V4 4-5 t/s（小模型不受影响）。
+
+### 多架构二进制（bins-v0.3.2，2026-08-09）
+
+**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.3.2 含 **on-demand pin 主路径** + **动态 pin 集合（低内存模式）** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ 分层 pin（`MOE_L2_PIN_LAYERS`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）。
 
 | 显卡 | 架构 | DS-V2-Lite 生成 | Qwen3.6-A3B 生成 | 显存 |
 |------|------|----------------|-----------------|------|
@@ -79,7 +94,7 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 | RTX 5090 | sm_120a（Blackwell） | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
 | RTX 4090* | sm_89（Ada） | 39.0 t/s | 51.5 t/s | 1.6-2.9 GB |
 
-\* 4090 为多架构包实测（2026-08-07，on-demand pin + cache 2048，CUDA 12.8）；2080 Ti / 3080 Ti / 5090 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.1，旧 host-buffer 11.15 翻倍）。
+\* 4090 为多架构包实测（2026-08-07，on-demand pin + cache 2048，CUDA 12.8）；2080 Ti / 3080 Ti / 5090 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
 
 > 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。注意：llama.cpp 76f46ad 对 SM120a（50 系）内核优化还不成熟——5090 比 3080 Ti 只快 36%（DS）甚至慢 27%（Qwen），换新版 llama.cpp 重编后 50 系速度有望提升。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 
@@ -174,7 +189,7 @@ pip install moe-l2
 ```bash
 moe-l2 download-bins
 ```
-从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.3.1，约 1.9 GB 多架构全兼容包，含 cuda-libs）。
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.3.2，约 1.9 GB 多架构全兼容包，含 cuda-libs）。
 
 ### 3. 启动
 
@@ -216,7 +231,7 @@ moe-l2 stats
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.3.1 约 1.9 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，含 cuda-libs），运行时通过 `moe-l2 download-bins` 获取。
+> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.3.2 约 1.9 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，含 cuda-libs），运行时通过 `moe-l2 download-bins` 获取。
 
 ---
 
