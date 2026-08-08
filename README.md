@@ -81,10 +81,11 @@ MoE models have many "experts" but only activate a few per token. moe-l2 predict
 
 ```
 user → moe-l2 proxy (localhost:11435)
-    ├── predict domain
+    ├── predict domain (keyword → TF-IDF → semantic)
     ├── on-demand pin experts (lazy mmap + register, zero VRAM)
+    ├── hot experts cached in VRAM (A3 LRU)
     └── forward to llama-server (localhost:11436, CUDA GPU)
-        └── scheduler copies only activated experts to GPU per step
+        └── GPU reads pinned experts via PCIe DMA; cold pages evicted
 ```
 
 ### Visual demo (RTX 4090, 2026-08-02)
@@ -193,8 +194,9 @@ cache.preload(domain_to_expert_ids[domain])
 ┌────────────────────────────────────────────────────────────┐
 │         llama-server (port 11436, CUDA GPU)                │
 │         on-demand pin experts: lazy mmap, zero VRAM       │
-│         scheduler copies only activated experts → GPU      │
-│         (optional sched-cache: D2D for hot experts)        │
+│         GPU reads pinned experts via PCIe DMA             │
+│         hot experts cached in VRAM (A3 LRU, 2048 slots)   │
+│         cold expert pages evicted (v3.1, RSS capped)      │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -231,10 +233,10 @@ Options:
 | Prompt processing (DS-V2-Lite) | 110 t/s | 99 t/s · **308 t/s** (sched-cache=0.25) |
 | Generation speed (DS-V2-Lite) | 65 t/s | 37.9 t/s · 39.2 t/s (sched-cache=0.25) |
 | Generation speed (Qwen3.6-A3B) | — | 50.2 t/s |
-| VRAM used (DS-V2-Lite) | 23.3 GB | **1.6 GB** |
-| Model size / VRAM ratio | 0.26× | **3.9×** |
+| VRAM used (DS-V2-Lite) | 23.3 GB | **2.0 GB** |
+| Model size / VRAM ratio | 0.26× | **3.1×** |
 
-The speed tradeoff is intentional and small: experts live in CPU pinned memory (host buffer, zero VRAM), and the scheduler copies only activated experts to GPU per step. On the 2026-08-02 host-buffer build, DS-V2-Lite reaches 37.5 t/s gen at 1.6 GB VRAM — ~58% of full-GPU speed at <7% of the VRAM.
+The speed tradeoff is intentional and small: expert weights live in CPU RAM (lazy mmap, zero VRAM) and are pinned on first touch — the GPU reads them directly via PCIe DMA, hot experts are cached in VRAM (A3 LRU), and cold pages are evicted to keep RSS capped. On the 2026-08-07 on-demand pin build, DS-V2-Lite reaches 37.9 t/s gen at 2.0 GB VRAM — ~58% of full-GPU speed at <9% of the VRAM.
 
 ## Expert Cache & host-buffer fast path (llama.cpp)
 
