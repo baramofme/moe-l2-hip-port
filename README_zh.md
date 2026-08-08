@@ -70,7 +70,7 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 ### 低内存模式：动态 pin 集合（2026-08-09）
 
-默认 on-demand pin 首次触碰时注册**整个专家 tensor**——最快（DeepSeek-V4-Flash 10.1 t/s），但 85GB 模型会把 ~82GB 专家页钉在内存。内存受限机器用 **动态 pin 集合**：只注册实际激活的专家（逐专家、按连续组注册），LRU 淘汰器把冷专家 unregister + madvise 释放。RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M（85GB）实测：**RSS 84GB → 17-24GB**（由 `MOE_L2_LRU_MAX_EXPERTS` 调节），速度 4-5 t/s（新专家首次触碰要付一次缺页读盘；V4 路由极分散——30 轮会话会触及 ~29GB 不同专家）。小 MoE 模型（Qwen3.6-A3B / DS-V2-Lite）工作集小，**保持满速**。
+**默认（不设任何环境变量）= whole-pin，保持 v0.3.1 满速**（Qwen 2080 Ti ≈16 t/s、V4 4090 10.1 t/s）；设 `MOE_L2_LRU=1` 才开启本低内存模式。默认 on-demand pin 首次触碰时注册**整个专家 tensor**——最快，但 85GB 模型会把 ~82GB 专家页钉在内存。内存受限机器用 **动态 pin 集合**：只注册实际激活的专家（逐专家、按连续组注册），LRU 淘汰器把冷专家 unregister + madvise 释放。RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M（85GB）实测：**RSS 84GB → 17-24GB**（由 `MOE_L2_LRU_MAX_EXPERTS` 调节），速度 4-5 t/s（新专家首次触碰要付一次缺页读盘；V4 路由极分散——30 轮会话会触及 ~29GB 不同专家）。小 MoE 模型（Qwen3.6-A3B / DS-V2-Lite）工作集小，**保持满速**。
 
 开启（32GB 内存机器示例）：
 
