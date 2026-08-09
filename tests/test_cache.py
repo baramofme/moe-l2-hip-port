@@ -7,7 +7,7 @@ calling wait_for_pending() after each batch of requests.
 
 import pytest
 
-from moe_l2.cache import L2Cache, DEFAULT_EXPERT_SIZE
+from moe_l2.cache import DEFAULT_EXPERT_SIZE, L2Cache
 
 
 @pytest.fixture
