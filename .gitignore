@@ -16,9 +16,9 @@ build/
 # Bundled binaries — hosted in GitHub Release, not tracked in git
 moe_l2/bin/
 
-# Project-specific — dev scripts at root
-run_proxy_*.py
-test_cache.py
+# Project-specific — dev scripts at root (anchored: don't ignore tests/ files)
+/run_proxy_*.py
+/test_cache.py
 
 # Promotional articles (not source code)
 推广文-*.md
