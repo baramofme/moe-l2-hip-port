@@ -108,25 +108,27 @@ def _retrain(sample_path: Path) -> None:
     sys.path.insert(0, str(DATA_DIR))
     sys.path.insert(0, str(ROOT / "moe_l2"))
 
-    from prototypes import DOMAIN_PROTOTYPES  # type: ignore
-    from collect import DEFAULT_PROMPTS  # type: ignore
-
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.svm import LinearSVC
-    from sklearn.pipeline import make_pipeline
     import joblib
+    from collect import DEFAULT_PROMPTS  # type: ignore
+    from prototypes import DOMAIN_PROTOTYPES  # type: ignore
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.pipeline import make_pipeline
+    from sklearn.svm import LinearSVC
 
     texts, labels = [], []
     for dom, protos in DOMAIN_PROTOTYPES.items():
         for p in protos:
-            texts.append(p); labels.append(dom)
+            texts.append(p)
+            labels.append(dom)
     for dom, prompts in DEFAULT_PROMPTS.items():
         for p in prompts:
             if p not in texts:
-                texts.append(p); labels.append(dom)
+                texts.append(p)
+                labels.append(dom)
     # 累积样本（真实流量，数据飞轮的核心）
     for s in load_samples(sample_path):
-        texts.append(s["prompt"]); labels.append(s["domain"])
+        texts.append(s["prompt"])
+        labels.append(s["domain"])
 
     pipe = make_pipeline(
         TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), min_df=1),

@@ -11,10 +11,8 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import os
-import signal
 import subprocess
 import sys
 import tarfile
@@ -27,7 +25,7 @@ import httpx
 
 from . import __version__
 from .cache import L2Cache
-from .proxy import start_proxy, DEFAULT_PORT, DEFAULT_HOST, LLAMA_SERVER_BASE
+from .proxy import DEFAULT_HOST, DEFAULT_PORT, LLAMA_SERVER_BASE, start_proxy
 
 logger = logging.getLogger("moe-l2")
 
@@ -118,7 +116,7 @@ def _ensure_bins(tag: str | None = None) -> bool:
     if _LLAMA_SERVER_PATH.exists():
         return True
     print(f"  [download-bins] Binary not found at {_BUNDLE_DIR}")
-    print(f"  Auto-downloading from GitHub Releases...")
+    print("  Auto-downloading from GitHub Releases...")
     return _download_bins(tag or _DEFAULT_BINS_TAG)
 
 
@@ -127,7 +125,7 @@ def _flatten_nested_bins() -> None:
     nested = _BUNDLE_DIR / "bin"
     if not nested.is_dir():
         return
-    print(f"  [download-bins] Detected nested bin/ layout, flattening ...")
+    print("  [download-bins] Detected nested bin/ layout, flattening ...")
     for item in sorted(nested.iterdir()):
         dest = _BUNDLE_DIR / item.name
         if item.is_dir() and dest.exists() and not dest.is_symlink():
@@ -177,7 +175,7 @@ def _download_bins(tag: str) -> bool:
         size = _LLAMA_SERVER_PATH.stat().st_size
         print(f"  OK: llama-server ({size} bytes)")
         return True
-    print(f"  ERROR: llama-server not found after extraction")
+    print("  ERROR: llama-server not found after extraction")
     return False
 
 
@@ -373,7 +371,7 @@ def main():
         "model", help="List / download models from hf-mirror.com"
     )
     model_sub = model_parser.add_subparsers(dest="model_command", help="Model sub-commands")
-    model_list_parser = model_sub.add_parser("list", help="List available models")
+    model_sub.add_parser("list", help="List available models")
     model_dl_parser = model_sub.add_parser("download", help="Download a model")
     model_dl_parser.add_argument("--model", required=True, help="Model name (see 'moe-l2 model list')")
     model_dl_parser.add_argument(
@@ -437,8 +435,9 @@ def main():
         from .collect import cmd_collect
         return cmd_collect(args)
     elif args.command == "embed-map":
-        from .gguf_embed import embed_map
         import os as _os
+
+        from .gguf_embed import embed_map
         map_path = args.map or _os.path.join(
             _os.path.dirname(__file__), "data", "domain_expert_map.json"
         )
@@ -476,7 +475,7 @@ def _check_nvidia() -> tuple[bool, str]:
         )
         if r.returncode != 0:
             return False, "nvidia-smi not available (no NVIDIA driver?)"
-        lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+        lines = [line.strip() for line in r.stdout.strip().splitlines() if line.strip()]
         if not lines:
             return False, "nvidia-smi returned no GPU"
         return True, lines[0]
@@ -737,11 +736,11 @@ def cmd_start(args):
         # the 30s health poll, and give an actionable message.
         libs_ok, libs_detail = _check_dynamic_libs()
         if not libs_ok:
-            print(f"  ERROR: llama-server dynamic libraries not satisfiable")
+            print("  ERROR: llama-server dynamic libraries not satisfiable")
             print(f"    {libs_detail}")
-            print(f"    Fix: run 'moe-l2 doctor' for details; if libnccl.so.2 is")
-            print(f"    missing, update to a recent moe-l2 release (bins >= v0.2.1")
-            print(f"    bundles libnccl) or install the NVIDIA nccl library.")
+            print("    Fix: run 'moe-l2 doctor' for details; if libnccl.so.2 is")
+            print("    missing, update to a recent moe-l2 release (bins >= v0.2.1")
+            print("    bundles libnccl) or install the NVIDIA nccl library.")
             return 1
 
         try:
@@ -773,7 +772,7 @@ def cmd_start(args):
         try:
             gate = RoutingProfiler(cache=cache, expert_map=load_mapping())
             gate_thread = _spawn_gate_reader(llama_proc, gate)
-            print(f"  gate:     online routing adaptation (LLAMA_EXPERT_LOG) enabled")
+            print("  gate:     online routing adaptation (LLAMA_EXPERT_LOG) enabled")
         except Exception as e:
             logger.warning("Gate init failed (non-fatal): %s", e)
             gate = None

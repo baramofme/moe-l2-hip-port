@@ -6,13 +6,13 @@ based on domain prediction before forwarding the request.
 
 import json
 import logging
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
 
 import httpx
 
-from .predictor import predict_hybrid, load_mapping, enable_tfidf
 from .cache import L2Cache
+from .predictor import enable_tfidf, load_mapping, predict_hybrid
 from .training_flywheel import append_sample, maybe_retrain, training_stats
 
 if False:  # TYPE_CHECKING only
@@ -172,7 +172,9 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
                 # SSE-specific headers
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
+                # HTTP/1.0 服务器无 Content-Length/chunked，客户端只能靠连接
+                # 关闭判断流结束——不能声明 keep-alive，否则流式响应挂死。
+                self.send_header("Connection", "close")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
 
@@ -274,7 +276,6 @@ def start_proxy(
     MoEL2ProxyHandler.gate = gate
     # Patch the backend URL onto the handler
     MoEL2ProxyHandler.backend_url = backend_url
-    import functools
     server = HTTPServer((host, port), MoEL2ProxyHandler)
     server.timeout = 0.5  # allow KeyboardInterrupt to work
     logger.info("moe-l2 proxy listening on %s:%s → %s", host, port, backend_url)

@@ -8,10 +8,10 @@ activated experts.
 Usage: python generate_expert_map.py [--data-dir ...] [--output ...]
 """
 
+import argparse
 import json
 import os
 import re
-import argparse
 from collections import Counter, defaultdict
 
 # 8 domains matching Phase 1 experiments
@@ -63,7 +63,7 @@ def parse_domain(data_dir: str, domain: str) -> dict:
             layer_counter[layer].update(experts)
             n_lines += 1
         total_lines += n_lines
-        print(f"  {domain}/{stage}: {n_lines} lines → {sum(len(layer_counter[l]) for l in sorted(layer_counter))} unique expert×layer slots")
+        print(f"  {domain}/{stage}: {n_lines} lines → {sum(len(layer_counter[layer]) for layer in sorted(layer_counter))} unique expert×layer slots")
     
     return {
         "layer_counter": layer_counter,

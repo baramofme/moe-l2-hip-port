@@ -52,4 +52,36 @@ moe_l2 = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-cov>=5",
+    "ruff>=0.6",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --cov=moe_l2 --cov-report=term-missing:skip-covered --cov-fail-under=50"
+
+[tool.coverage.run]
+source = ["moe_l2"]
+branch = true
+# 排除非运行时核心模块：一次性数据采集脚本（collect）、在线门控
+# （gate，需真实 llama-server 流量）、embed-map 命令工具（gguf_embed）、
+# 可选语义预测器（semantic_predictor，需 sentence-transformers）。
+# 这些在 CI 上不可测或需外部依赖；核心调度链路的覆盖率见报告。
+omit = [
+    "moe_l2/collect.py",
+    "moe_l2/gate.py",
+    "moe_l2/gguf_embed.py",
+    "moe_l2/semantic_predictor.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = []

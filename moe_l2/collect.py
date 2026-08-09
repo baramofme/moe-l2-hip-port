@@ -169,7 +169,7 @@ def collect_routing(llama_cli: str, model_path: str, prompt: str, n_tokens: int,
         tmp.close()
         with open(tmp_path, encoding="utf-8", errors="replace") as f:
             content = f.read()
-        lines = [l for l in content.split("\n") if "EXPERT|" in l]
+        lines = [line for line in content.split("\n") if "EXPERT|" in line]
         if not lines and proc.returncode != 0:
             # 完全失败（模型加载错误等），打印最后几行帮助排查
             err_tail = "\n".join(content.split("\n")[-5:])
@@ -298,7 +298,7 @@ def cmd_collect(args):
         all_freq[domain] = domain_freq
 
     # 4. 生成映射表
-    print(f"\n[3/4] 生成 domain_expert_map.json...")
+    print("\n[3/4] 生成 domain_expert_map.json...")
     domain_map = build_domain_map(all_freq, n_layers, model_path, n_experts, n_expert_used)
 
     # 5. 写固定位置

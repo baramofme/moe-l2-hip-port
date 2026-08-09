@@ -29,10 +29,8 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import threading
-import time
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -207,13 +205,17 @@ class L2Cache:
             # 不保留旧域 pin，避免 pin 累积占满 slots 使 LRU 失效。
             self._active_domain = domain
 
-            # 旧域 pin 全部降级（保留在 slots，但不再占 pin 名额）
+            # 旧域 pin 全部降级（保留在 slots，但不再占 pin 名额）。
+            # 注意：必须先 clear 再 _touch —— _touch 对仍在 pin 集合里的
+            # 专家会直接 return，若在 clear 之前调用会导致旧域专家既失去
+            # pin 又不进入 LRU 追踪（幽灵槽位），新域专家加载时找不到
+            # 可逐出槽位而被静默跳过，缓存切换后即卡死。
             for layer_idx in range(self.n_layers):
-                for eid in list(self._domain_pinned[layer_idx]):
-                    if eid not in self._pinned[layer_idx]:
-                        # 降级：从 pin 移除，重新进入 LRU 追踪（保留缓存数据）
-                        self._touch(layer_idx, eid)
+                old_pins = list(self._domain_pinned[layer_idx])
                 self._domain_pinned[layer_idx].clear()
+                for eid in old_pins:
+                    if eid not in self._pinned[layer_idx]:
+                        self._touch(layer_idx, eid)
 
             # Collect loads and pin
             to_load: list[tuple[int, int]] = []
@@ -357,8 +359,8 @@ class L2Cache:
                 1 for ls in self._slots for s in ls if s != _EMPTY
             )
             pinned_count = sum(
-                len(self._pinned[l] | self._domain_pinned[l])
-                for l in range(self.n_layers)
+                len(self._pinned[layer] | self._domain_pinned[layer])
+                for layer in range(self.n_layers)
             )
 
             # Per-layer breakdown (compact)
