@@ -301,6 +301,21 @@ AirLLM is a general-purpose layer-offload scheme for very large models. Its sche
 
 **Which to choose**: pick moe-l2 if you run MoE models (DeepSeek/Qwen) locally for chat, have an 8–12GB older NVIDIA card, want an OpenAI API for tooling, or use multi-shard giant GGUFs. Pick AirLLM if you need dense (non-MoE) models, use Windows/macOS/AMD or CPU-only environments (moe-l2 currently requires Linux + NVIDIA), only do one-shot batch generation, or must stay with native HF weights.
 
+## Testing
+
+Automated CI runs on every push (GitHub Actions, Python 3.10–3.13): `ruff` lint, `pytest` with coverage (fail below 50%), and package build. Status badge: [![CI](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml/badge.svg)](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml)
+
+- **113 tests** covering the Python scheduler core: domain predictor (keyword boundaries, fallback), L2 cache (LRU eviction, pinning, domain switching), GGUF weight reader (synthetic models), transparent proxy (live fake-backend HTTP, blocking + SSE), CLI helpers and the training data flywheel.
+- **Coverage**: 72–88% on the core modules (cache 88%, proxy 78%, gguf_reader 73%, predictor 72%), ~55% total.
+- Run locally:
+  ```bash
+  uv sync --group dev
+  uv run pytest tests/
+  uv run ruff check moe_l2/ tests/
+  ```
+
+> The C++ side (llama.cpp on-demand-pin / expert-cache patches) is GPU-bound and is verified by the end-to-end benchmark reports in `references/` — see [models-benchmark.md](references/models-benchmark.md).
+
 ## Project status
 
 - ✅ Domain predictor (keyword + optional semantic)

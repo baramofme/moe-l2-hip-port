@@ -291,6 +291,21 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 
 ---
 
+## 测试
+
+每次 push 自动跑 CI（GitHub Actions，Python 3.10–3.13）：ruff 静态检查 + pytest 覆盖率（低于 50% 判失败）+ 打包验证。状态徽章：[![CI](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml/badge.svg)](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml)
+
+- **113 个测试**覆盖 Python 调度核心：领域预测器（关键词边界、兜底）、L2 缓存（LRU 淘汰、pin、领域切换）、GGUF 权重读取（合成模型）、透明代理（真实假后端 HTTP，阻塞 + SSE 流式）、CLI 辅助函数与数据飞轮。
+- **覆盖率**：核心模块 72–88%（cache 88%、proxy 78%、gguf_reader 73%、predictor 72%），总计约 55%。
+- 本地运行：
+  ```bash
+  uv sync --group dev
+  uv run pytest tests/
+  uv run ruff check moe_l2/ tests/
+  ```
+
+> C++ 侧（llama.cpp on-demand-pin / expert-cache 补丁）依赖 GPU，由 `references/` 下的端到端实测报告验证——见 [models-benchmark.md](references/models-benchmark.md)。
+
 ## 项目状态
 
 - ✅ 领域预测器（关键词 + 可选语义）
