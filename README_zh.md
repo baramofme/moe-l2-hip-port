@@ -20,34 +20,6 @@
 
 **DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——RTX 4090 实测 **35.96 t/s**（on-demand 兜底，RSS 17.5GB）；selective pin（v4_top100.map）**34.67 t/s**（RSS 26.8GB）；显存 16.5-16.7GB，2026-08-10 实测。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
 
-**一行安装（Linux x86_64 + NVIDIA 显卡）：**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yalun753/moe-l2/main/scripts/install.sh | bash
-```
-
-安装脚本自动检测显卡/驱动/Python → 从 PyPI 装 moe-l2 → 下载预编译 CUDA 二进制 → 可选下载演示模型（Qwen3.6-35B-A3B，约 11.5GB，断点续传）→ 自检。
-
-**手动安装：**
-
-```bash
-pip install moe-l2
-moe-l2 download-bins
-moe-l2 model download --model qwen3.6-35b   # 可选：下载演示模型（约 11.5GB）
-moe-l2 start --model model.gguf --gpu
-```
-
-常用命令：
-
-```bash
-moe-l2 doctor                        # 环境自检（GPU/CUDA/Python/磁盘）
-moe-l2 model list                    # 查看可下载的模型
-moe-l2 model download --model <name> # 下载模型（断点续传，走 hf-mirror）
-```
-
-连接 `localhost:11435`，现有工具（curl、Open WebUI、LangChain）无需改配置。
-
-
 ### 可视化演示（RTX 4090，2026-08-10）
 
 | Qwen3.6-35B-A3B（32B MoE）— 标准 vs moe-l2 | DeepSeek-V2-Lite（16B MoE）— 8GB 卡 vs 24GB 卡 |
@@ -64,7 +36,6 @@ moe-l2 model download --model <name> # 下载模型（断点续传，走 hf-mirr
 
 ---
 
-
 ### Benchmarked on RTX 4090（2026-08-10，selective pin 主路径）
 
 基于 **RTX 4090** 实测（2026-08-10，selective pin 主路径：路由表驱动 top-K pin + GPU cache 预填充，bins-v0.4.0）：
@@ -79,7 +50,6 @@ moe-l2 model download --model <name> # 下载模型（断点续传，走 hf-mirr
 
 > 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试（2026-08-10，selective pin + A3 cache 2048 槽）：专家驻留 CPU RAM（零显存），路由表预 pin 高频专家，调度器每步只把**激活的专家**拷到 GPU 直算，热专家缓存在 GPU 显存。DS-V2-Lite **145.63 t/s**（4.9GB 显存、2.1GB RSS），Qwen3.6-A3B **74.99 t/s**（3.1GB 显存、2.3GB RSS）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark](references/models-benchmark.md)
 
-
 ### Selective pin — 低内存主路径（2026-08-10，v0.4.0）
 
 ![Selective pin RSS 对比——whole-pin 84GB vs selective pin 26.8GB vs on-demand 17.5GB，DeepSeek-V4-Flash UD-IQ2_M @ RTX 4090](docs/demo/fig5-selective-pin-rss.png)
@@ -91,7 +61,6 @@ moe-l2 model download --model <name> # 下载模型（断点续传，走 hf-mirr
 ```bash
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 ```
-
 
 ### 多架构二进制（bins-v0.4.0，2026-08-10）
 
@@ -107,7 +76,6 @@ moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 \* 4090 行为 bins-v0.4.0 全链路实测（2026-08-10：Qwen 74.99 / DS 145.63 t/s，显存 3.1-4.9GB，RSS 2.1-2.3GB；此前 39.0/51.5 为 08-02 单架构基线）；2080 Ti 行为 bins-v0.4.0 全链路实测（moe-l2 start --gpu，selective pin，2026-08-10 重测：Qwen 47.24 / DS 87.25 t/s，比原版 +200~700%）；5090 行为 bins-v0.4.0 全链路实测（2026-08-10：Qwen 76.41 / DS 135.57 t/s，比原版 +687~715%）；3080 Ti 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
 
 > 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。2026-08-10 bins-v0.4.0 全链路复测：5090 DS **135.57** / Qwen **76.41** t/s（原版 llama.cpp 二进制仅 16.63/9.71——moe-l2 优化释放 Blackwell 真实性能）。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
-
 
 ## 快速开始
 
@@ -147,7 +115,6 @@ moe-l2 stats
 
 ---
 
-
 ## 工作原理（简版）
 
 1. 你的 prompt 到达 moe-l2 代理
@@ -157,7 +124,6 @@ moe-l2 stats
 5. 可选 sched-cache（`GGML_CUDA_EXPERT_CACHE=0.25`）：命中热专家走 D2D 免 PCIe，DS 类模型 Prompt +211%
 
 ---
-
 
 ## 适用场景
 
@@ -173,7 +139,6 @@ moe-l2 stats
 - 机械硬盘作存储 — **需要 NVMe 固态**
 
 ---
-
 
 ## 系统架构
 
@@ -222,7 +187,6 @@ L3 ─ SSD 冷存储    GGUF 文件 mmap，冷专家页按需读入 + v3.1 淘�
 
 ---
 
-
 ## CLI 参考
 
 | 命令 | 说明 |
@@ -244,7 +208,6 @@ L3 ─ SSD 冷存储    GGUF 文件 mmap，冷专家页按需读入 + v3.1 淘�
 
 ---
 
-
 ## 平台要求
 
 - **仅 Linux x86_64** — 预编译二进制目标为 Linux AMD64（CUDA `.so` + `llama-server`）
@@ -253,7 +216,6 @@ L3 ─ SSD 冷存储    GGUF 文件 mmap，冷专家页按需读入 + v3.1 淘�
 - `--gpu` 模式需要 NVIDIA 显卡（CUDA 后端）
 
 ---
-
 
 ## 更多数据
 
@@ -268,7 +230,6 @@ L3 ─ SSD 冷存储    GGUF 文件 mmap，冷专家页按需读入 + v3.1 淘�
 速度取舍是可预期的：专家驻留 CPU RAM（mmap 惰性 + on-demand pin，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-10 bins-v0.4.0 selective pin 主路径：DS-V2-Lite 生成 **145.63 t/s**（+284%）、Qwen3.6-A3B **74.99 t/s**（+49%，超 pre-lazy 46.5）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%，08-02 口径）。
 
 ---
-
 
 ## 相关工作
 
@@ -292,7 +253,6 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 
 ---
 
-
 ## 测试
 
 每次 push 自动跑 CI（GitHub Actions，Python 3.10–3.13）：ruff 静态检查 + pytest 覆盖率（低于 50% 判失败）+ 打包验证。状态徽章：[![CI](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml/badge.svg)](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml)
@@ -308,7 +268,6 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 
 > C++ 侧（llama.cpp on-demand-pin / expert-cache 补丁）依赖 GPU，由 `references/` 下的端到端实测报告验证——见 [models-benchmark.md](references/models-benchmark.md)。
 
-
 ## 项目状态
 
 - ✅ 领域预测器（关键词 + 可选语义）
@@ -321,7 +280,6 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 - ✅ PyPI 包（`moe-l2`）
 
 ---
-
 
 ## 许可证
 
