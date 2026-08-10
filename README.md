@@ -16,7 +16,7 @@
 | **8 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** | **50.2 t/s** |
 | 10-11 GB | — | **DeepSeek-V4-Flash (157B MoE, 85 GB file) ✅** | **30.9 t/s** |
 
-> Speed = RTX 4090 measured (2026-08-10, selective pin + A3 cache 2048, multi-arch build); 2080 Ti full-chain: Qwen 52.07 t/s, DS-V2-Lite 94.95 t/s. See [models-benchmark.md](references/models-benchmark.md).
+> Speed = RTX 4090 measured (2026-08-10, selective pin + A3 cache 2048, multi-arch build); 2080 Ti full-chain (bins-v0.4.0, selective pin): Qwen 47.24 t/s, DS-V2-Lite 87.25 t/s. See [models-benchmark.md](references/models-benchmark.md).
 
 Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.9 GB VRAM (on-demand pin experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — with selective pin, RSS drops to **10.4 GB** (from 84.4 GB, −88%) with zero speed regression (30.9 t/s). Full report: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **All measured models: [models-benchmark.md](references/models-benchmark.md)**
 
@@ -55,12 +55,12 @@ One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-
 
 | GPU | Architecture | DS-V2-Lite gen | Qwen3.6-A3B gen | VRAM |
 |-----|-------------|----------------|-----------------|------|
-| RTX 2080 Ti | sm_75 (Turing) | 94.95 t/s | 52.07 t/s | ~1.0-2.4 GB |
+| RTX 2080 Ti | sm_75 (Turing) | 87.25 t/s | 47.24 t/s | ~1.0-2.4 GB |
 | RTX 3080 Ti | sm_86 (Ampere) | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
 | RTX 5090 | sm_120a (Blackwell) | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
 | RTX 4090* | sm_89 (Ada) | 39.0 t/s | 51.5 t/s | 1.6-2.9 GB |
 
-\* 4090 measured with the multi-arch package (2026-08-07, on-demand pin + cache 2048, CUDA 12.8); 2080 Ti row = bins-v0.4.0 full-chain (moe-l2 start --gpu, 2026-08-10, +145~730% vs vanilla llama.cpp); 3080 Ti / 5090 rows are v3.1 multi-arch (bins-v0.3.0). Qwen single-turn 24.5 t/s on 2080 Ti (bins-v0.3.2, 2x vs old host-buffer 11.15).
+\* 4090 measured with the multi-arch package (2026-08-07, on-demand pin + cache 2048, CUDA 12.8); 2080 Ti row = bins-v0.4.0 full-chain (moe-l2 start --gpu, selective pin, 2026-08-10 re-measured: Qwen 47.24 / DS 87.25 t/s, +200~700% vs vanilla); 3080 Ti / 5090 rows are v3.1 multi-arch (bins-v0.3.0). Qwen single-turn 24.5 t/s on 2080 Ti (bins-v0.3.2, 2x vs old host-buffer 11.15).
 
 > Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). Note: SM120a (RTX 50) kernel efficiency in llama.cpp 76f46ad is not yet mature — RTX 5090 shows only +36% over 3080 Ti on DS and −27% on Qwen; a newer llama.cpp rebuild should improve 50-series speed. Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md) · **DeepSeek V4 Flash (157B) dual-GPU run: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)**
 
@@ -328,7 +328,7 @@ Automated CI runs on every push (GitHub Actions, Python 3.10–3.13): `ruff` lin
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
 - ✅ Host-buffer expert GPU fast path (2026-08-02): DS-V2-Lite 12.5 → 37.5 t/s, Qwen3.6-A3B 10 → 46.8 t/s at 1.6 / 2.1 GB VRAM — experts in CPU pinned memory, only activated experts copied to GPU
 - ✅ **On-demand pin main path (2026-08-07)**: lazy mmap load + first-touch merge-registration of the whole expert tensor + A3 cache 2048 slots → Qwen **50.2** / DS **37.9** / V4 **10.1** t/s on 4090 (V4 5× faster than 1.7-2.0); fixes CUDA 11.8 cross-register-range copy crash
-- ✅ **Selective pin + GPU prefill (2026-08-10, v0.4.0)**: router-map-driven top-K pin → V4 RSS **84.4 → 10.4 GB (↓88%)** at **30.9 t/s zero regression**; GPU cache prefill lifts cold-start round1 10.7 → 19.7 t/s (+84%). Root-cause: the earlier 10.1 t/s V4 number was the **vanilla llama.cpp binary** — the moe-l2 optimized build was always ~30 t/s. 2080 Ti full-chain: Qwen **52.07** / DS **94.95** t/s (+145~730% vs vanilla)
+- ✅ **Selective pin + GPU prefill (2026-08-10, v0.4.0)**: router-map-driven top-K pin → V4 RSS **84.4 → 10.4 GB (↓88%)** at **30.9 t/s zero regression**; GPU cache prefill lifts cold-start round1 10.7 → 19.7 t/s (+84%). Root-cause: the earlier 10.1 t/s V4 number was the **vanilla llama.cpp binary** — the moe-l2 optimized build was always ~30 t/s. 2080 Ti full-chain re-measured (2026-08-10): Qwen **47.24** / DS **87.25** t/s (+200~700% vs vanilla)
 - ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090 (2026-08-02, sched-cache): cache benefit = expert size × hit rate — DS-V2-Lite (1.55 MB, top-6) gets Prompt +211% / Gen +5% at cache=0.25; Qwen (~1 MB) and Mixtral (252 MB, top-2) get no gain. Recommended: cache=0.25 for DS-class, off otherwise.
 - ✅ **DeepSeek-V4-Flash (157B MoE) verified (2026-08-05)**: 85 GB 3-shard GGUF runs on 2080 Ti (11 GB) and RTX 3080 (10 GB) — VRAM 8.3-9.1 GB, RSS capped by expert-page eviction v3.1 (fixed-expert-count LRU, `MOE_L2_LRU_MAX_EXPERTS`), multi-shard GGUF parsing fix shipped. Speed 0.89-2.22 t/s (GPU compute bound). [Full report](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI package (`moe-l2`)

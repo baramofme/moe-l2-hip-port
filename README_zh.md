@@ -16,7 +16,7 @@
 | **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** | **50.2 t/s** |
 | 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85 GB 文件）✅** | **30.9 t/s** |
 
-> 速度 = RTX 4090 实测（2026-08-10，selective pin + A3 cache 2048，多架构包）；2080 Ti 全链路：Qwen 52.07 t/s、DS-V2-Lite 94.95 t/s。详见 [models-benchmark.md](references/models-benchmark.md)。
+> 速度 = RTX 4090 实测（2026-08-10，selective pin + A3 cache 2048，多架构包）；2080 Ti 全链路（bins-v0.4.0，selective pin）：Qwen 47.24 t/s、DS-V2-Lite 87.25 t/s。详见 [models-benchmark.md](references/models-benchmark.md)。
 
 **DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——RTX 4090 实测 **30.9 t/s**（selective pin，RSS 从 84.4GB 降到 **10.4GB，↓88%**，零速度损失）；2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
 
@@ -94,12 +94,12 @@ llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
 
 | 显卡 | 架构 | DS-V2-Lite 生成 | Qwen3.6-A3B 生成 | 显存 |
 |------|------|----------------|-----------------|------|
-| RTX 2080 Ti | sm_75（Turing） | 94.95 t/s | 52.07 t/s | ~1.0-2.4 GB |
+| RTX 2080 Ti | sm_75（Turing） | 87.25 t/s | 47.24 t/s | ~1.0-2.4 GB |
 | RTX 3080 Ti | sm_86（Ampere） | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
 | RTX 5090 | sm_120a（Blackwell） | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
 | RTX 4090* | sm_89（Ada） | 39.0 t/s | 51.5 t/s | 1.6-2.9 GB |
 
-\* 4090 为多架构包实测（2026-08-07，on-demand pin + cache 2048，CUDA 12.8）；2080 Ti 行为 bins-v0.4.0 全链路实测（moe-l2 start --gpu，2026-08-10，比原版 llama.cpp 快 +145~730%）；3080 Ti / 5090 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
+\* 4090 为多架构包实测（2026-08-07，on-demand pin + cache 2048，CUDA 12.8）；2080 Ti 行为 bins-v0.4.0 全链路实测（moe-l2 start --gpu，selective pin，2026-08-10 重测：Qwen 47.24 / DS 87.25 t/s，比原版 +200~700%）；3080 Ti / 5090 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
 
 > 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。注意：llama.cpp 76f46ad 对 SM120a（50 系）内核优化还不成熟——5090 比 3080 Ti 只快 36%（DS）甚至慢 27%（Qwen），换新版 llama.cpp 重编后 50 系速度有望提升。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 
@@ -318,7 +318,7 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 - ✅ CLI（start/stats/collect/embed-map/download-bins，自动模型检测，GPU 模式）
 - ✅ host-buffer 专家 GPU 直算（2026-08-02）：DS-V2-Lite 12.5 → 37.5 t/s、Qwen3.6-A3B 10 → 46.8 t/s，VRAM 1.6 / 2.1 GB — 专家驻留 CPU pinned 零显存，调度器只拷激活专家
 - ✅ **on-demand pin 主路径（2026-08-07）**：mmap 惰性加载 + 首次触碰合并注册整个专家 tensor + A3 cache 2048 槽 → Qwen **50.2** / DS **37.9** / V4 **10.1** t/s（4090），V4 从 1.7-2.0 提升 5 倍；修复 CUDA 11.8 跨 register 区间拷贝崩溃
-- ✅ **selective pin + GPU 预填充（2026-08-10，v0.4.0）**：路由表驱动 top-K pin → V4 RSS **84.4 → 10.4GB（↓88%）** 且 **30.9 t/s 零拖累**；GPU cache 预填充让冷启动 round1 10.7 → 19.7 t/s（+84%）。根因澄清：之前 V4 10.1 t/s 是**官方原版 llama.cpp 二进制**——moe-l2 优化版本来就是 ~30 t/s。2080 Ti 全链路：Qwen **52.07** / DS **94.95** t/s（比原版 +145~730%）
+- ✅ **selective pin + GPU 预填充（2026-08-10，v0.4.0）**：路由表驱动 top-K pin → V4 RSS **84.4 → 10.4GB（↓88%）** 且 **30.9 t/s 零拖累**；GPU cache 预填充让冷启动 round1 10.7 → 19.7 t/s（+84%）。根因澄清：之前 V4 10.1 t/s 是**官方原版 llama.cpp 二进制**——moe-l2 优化版本来就是 ~30 t/s。2080 Ti 全链路重测（2026-08-10）：Qwen **47.24** / DS **87.25** t/s（比原版 +200~700%）
 - ✅ cache 挂 sched 拷贝层（2026-08-02）：DS 类模型 Prompt 99 → 308 t/s（+211%，cache=0.25，VRAM 不变）；Qwen/Mixtral 无收益不开
 - ✅ **DeepSeek-V4-Flash（157B MoE）验证通过（2026-08-05）**：85GB 三片 GGUF 在 2080 Ti（11GB）和 RTX 3080（10GB）上跑通——VRAM 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶（`MOE_L2_LRU_MAX_EXPERTS` 固定专家数 LRU）、多分片 GGUF 解析修复已随 0.7.0 发布。速度 0.89-2.22 t/s（卡算力极限）。[完整报告](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI 包（`moe-l2`）
