@@ -81,28 +81,9 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 ```
 
-### 低内存模式：动态 pin 集合（2026-08-09，旧版）
-
-![动态 pin 实测 RSS 曲线——105 轮跨话题封顶 45GB vs whole-pin 84GB；selective pin 26.8GB / on-demand 17.5GB 稳定线，DeepSeek-V4-Flash UD-IQ2_M @ RTX 4090](docs/demo/fig4-dynpin-rss-curve.png)
-
-*实测（RTX 4090，08-09/10）：动态 pin 跨话题 105 轮 RSS 9.8 → 45GB 封顶；whole-pin 84GB。2026-08-10 selective pin 26.8GB / on-demand 兜底 17.5GB（bins-v0.4.0）。动图：[dynpin-curve.gif](docs/demo/dynpin-curve.gif)*
-
-**默认（不设任何环境变量）= whole-pin，保持 v0.4.0 满速**（Qwen 2080 Ti ≈16 t/s、V4 4090 30.9 t/s）；设 `MOE_L2_LRU=1` 才开启本低内存模式。默认 on-demand pin 首次触碰时注册**整个专家 tensor**——最快，但 85GB 模型会把 ~82GB 专家页钉在内存。内存受限机器用 **动态 pin 集合**：只注册实际激活的专家（逐专家、按连续组注册），LRU 淘汰器把冷专家 unregister + madvise 释放。RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M（85GB）实测：**RSS 84GB → 17-24GB**（由 `MOE_L2_LRU_MAX_EXPERTS` 调节），速度 4-5 t/s（新专家首次触碰要付一次缺页读盘；V4 路由极分散——30 轮会话会触及 ~29GB 不同专家）。小 MoE 模型（Qwen3.6-A3B / DS-V2-Lite）工作集小，**保持满速**。
-
-开启（32GB 内存机器示例）：
-
-```bash
-LLAMA_EXPERT_LOG=1 MOE_L2_LRU=1 MOE_L2_LRU_MAX_EXPERTS=12000 \
-MOE_L2_EVICT_MB=20000 MOE_L2_EVICT_INTERVAL=4 \
-MOE_L2_PIN_LAYERS=0-2,14-20,36-37 GGML_OP_OFFLOAD_MIN_BATCH=1 \
-llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
-```
-
-`MOE_L2_PIN_LAYERS` 把通用层/稀疏层永久 pin（V4 上 L0-L2 + 稀疏层 = ~5.4GB 免费午餐）。调 `MOE_L2_LRU_MAX_EXPERTS`：2000 ≈ 17GB RSS（紧，较慢）/ 12000 ≈ 24GB RSS（V4 约 5.3 t/s）/ 不设 = 关闭淘汰。**权衡总结**：whole-pin = 最快（V4 30.9 t/s）但 82GB 内存；selective pin（路由表）= 26.8GB RSS 且 34.67 t/s（2026-08-10）；on-demand 兜底 = 17.5GB RSS 且 35.96 t/s；动态 pin = 17-24GB 内存但 V4 4-5 t/s（小模型不受影响）。
-
 ### 多架构二进制（bins-v0.4.0，2026-08-10）
 
-**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.4.0 含 **selective pin（路由表驱动）** + **GPU cache 预填充** + **on-demand pin 主路径** + **动态 pin 集合（低内存模式）** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ 分层 pin（`MOE_L2_PIN_LAYERS`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）。
+**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.4.0 含 **selective pin（路由表驱动）** + **GPU cache 预填充** + **on-demand pin 主路径** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ 分层 pin（`MOE_L2_PIN_LAYERS`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）。
 
 | 显卡 | 架构 | DS-V2-Lite 生成 | Qwen3.6-A3B 生成 | 显存 |
 |------|------|----------------|-----------------|------|

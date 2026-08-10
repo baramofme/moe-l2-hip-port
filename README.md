@@ -42,28 +42,9 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 ```
 
-### Low-memory mode: dynamic pin set (2026-08-09, legacy)
-
-![Dynamic pin measured RSS curve — 105 cross-topic rounds capped at 45 GB vs 84 GB whole-pin; selective pin 26.8 GB / on-demand 17.5 GB stable lines, DeepSeek-V4-Flash UD-IQ2_M on RTX 4090](docs/demo/fig4-dynpin-rss-curve.png)
-
-*Measured on RTX 4090 (2026-08-09/10): dynamic pin 105 cross-topic rounds RSS 9.8 → 45 GB capped; whole-pin 84 GB. 2026-08-10 selective pin 26.8 GB / on-demand fallback 17.5 GB (bins-v0.4.0). Animated: [dynpin-curve.gif](docs/demo/dynpin-curve.gif)*
-
-**Default (no env vars) = whole-pin at full v0.4.0 speed** (Qwen 2080 Ti ≈16 t/s, V4 4090 30.9 t/s); set `MOE_L2_LRU=1` to enable this low-memory mode. The default on-demand pin registers the **whole expert tensor** on first touch — fastest but pins ~82 GB of expert pages in RAM for 85 GB models. For memory-constrained machines, **dynamic pin set** registers only the experts actually activated (per-expert, group-registered), and the LRU evictor unregisters + madvises cold experts. Measured on RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M (85 GB): **RSS 84 GB → 17-24 GB** (configurable via `MOE_L2_LRU_MAX_EXPERTS`), speed 4-5 t/s (new experts pay a first-touch page-fault; V4 routes extremely wide — a 30-turn session touches ~29 GB of distinct experts). Small MoE models (Qwen3.6-A3B / DS-V2-Lite) keep full speed — their working sets fit any budget.
-
-Enable (example, 32 GB machine):
-
-```bash
-LLAMA_EXPERT_LOG=1 MOE_L2_LRU=1 MOE_L2_LRU_MAX_EXPERTS=12000 \
-MOE_L2_EVICT_MB=20000 MOE_L2_EVICT_INTERVAL=4 \
-MOE_L2_PIN_LAYERS=0-2,14-20,36-37 GGML_OP_OFFLOAD_MIN_BATCH=1 \
-llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
-```
-
-`MOE_L2_PIN_LAYERS` pins universal/sparse layers forever (L0-L2 + sparse layers = ~5.4 GB free lunch on V4). Tune `MOE_L2_LRU_MAX_EXPERTS`: 2000 ≈ 17 GB RSS (tight, slower) / 12000 ≈ 24 GB RSS (≈5.3 t/s on V4) / omit to disable eviction. Trade-off summary: **whole-pin** = fastest (30.9 t/s V4) at 82 GB RAM; **selective pin (router-map)** = 26.8 GB RSS at 34.67 t/s (2026-08-10); **on-demand fallback** = 17.5 GB RSS at 35.96 t/s; **dynamic pin** = 17-24 GB RAM at 4-5 t/s V4 (small models unaffected).
-
 ### Multi-architecture binaries (bins-v0.4.0, 2026-08-10)
 
-One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.4.0 includes the **selective pin (router-map driven)** + **GPU cache prefill** + **on-demand pin main path** + **dynamic pin set (low-memory mode)** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + layered pin (`MOE_L2_PIN_LAYERS`) + A3 cache 2048 slots + cuda-libs (no libnccl — not needed for single-GPU).
+One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.4.0 includes the **selective pin (router-map driven)** + **GPU cache prefill** + **on-demand pin main path** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + layered pin (`MOE_L2_PIN_LAYERS`) + A3 cache 2048 slots + cuda-libs (no libnccl — not needed for single-GPU).
 
 | GPU | Architecture | DS-V2-Lite gen | Qwen3.6-A3B gen | VRAM |
 |-----|-------------|----------------|-----------------|------|
