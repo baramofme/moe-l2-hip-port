@@ -97,9 +97,9 @@ llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
 | RTX 2080 Ti | sm_75（Turing） | 87.25 t/s | 47.24 t/s | ~1.0-2.4 GB |
 | RTX 3080 Ti | sm_86（Ampere） | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
 | RTX 5090 | sm_120a（Blackwell） | 135.57 t/s | 76.41 t/s | ~1.3-2.5 GB |
-| RTX 4090* | sm_89（Ada） | 39.0 t/s | 51.5 t/s | 1.6-2.9 GB |
+| RTX 4090* | sm_89（Ada） | 145.63 t/s | 74.99 t/s | 3.1-4.9 GB |
 
-\* 4090 为多架构包实测（2026-08-07，on-demand pin + cache 2048，CUDA 12.8）；2080 Ti 行为 bins-v0.4.0 全链路实测（moe-l2 start --gpu，selective pin，2026-08-10 重测：Qwen 47.24 / DS 87.25 t/s，比原版 +200~700%）；5090 行为 bins-v0.4.0 全链路实测（2026-08-10：Qwen 76.41 / DS 135.57 t/s，比原版 +687~715%）；3080 Ti 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
+\* 4090 行为 bins-v0.4.0 全链路实测（2026-08-10：Qwen 74.99 / DS 145.63 t/s，显存 3.1-4.9GB，RSS 2.1-2.3GB；此前 39.0/51.5 为 08-02 单架构基线）；2080 Ti 行为 bins-v0.4.0 全链路实测（moe-l2 start --gpu，selective pin，2026-08-10 重测：Qwen 47.24 / DS 87.25 t/s，比原版 +200~700%）；5090 行为 bins-v0.4.0 全链路实测（2026-08-10：Qwen 76.41 / DS 135.57 t/s，比原版 +687~715%）；3080 Ti 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
 
 > 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。2026-08-10 bins-v0.4.0 全链路复测：5090 DS **135.57** / Qwen **76.41** t/s（原版 llama.cpp 二进制仅 16.63/9.71——moe-l2 优化释放 Blackwell 真实性能）。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 

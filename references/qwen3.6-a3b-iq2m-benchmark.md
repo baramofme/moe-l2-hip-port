@@ -20,8 +20,9 @@
 
 1. **2080 Ti 上 Qwen 全链路 47.24 t/s**（vs 原版 llama.cpp 11.15 t/s ≈ +324%）；4090 上仍为 50.2 t/s
 2. **5090 上 Qwen 全链路 76.41 t/s**（vs 原版 llama.cpp 9.71 t/s ≈ +687%，2026-08-10 同机补充实测，round3 追问1；短对话 66.44 / 追问2 69.86）——moe-l2 优化释放 Blackwell 真实性能
-3. **selective pin 零拖累**：路由表 top-100 pin 后 2080 Ti 速度与 whole-pin 同量级
-4. **冷启动明显**：round1 26.75 → round3 41.66（首次加载路由表 + 专家 pin + GPU cache 预热），稳定轮见上表
+3. **4090 上 Qwen 全链路 74.99 t/s**（vs 08-02 单架构基线 46.8 t/s ≈ +60%，2026-08-10 修复版实测，round3 追问1；短对话 65.08 / 追问2 63.71；VRAM 3.1GB、RSS 2.3GB）——与 5090 相当
+4. **selective pin 零拖累**：路由表 top-100 pin 后 2080 Ti 速度与 whole-pin 同量级
+5. **冷启动明显**：round1 26.75 → round3 41.66（首次加载路由表 + 专家 pin + GPU cache 预热），稳定轮见上表
 
 ---
 
