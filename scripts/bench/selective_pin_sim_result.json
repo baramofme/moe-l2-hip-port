@@ -1,0 +1,65 @@
+{
+  "model": "DeepSeek-V4-Flash IQ2_M",
+  "base": {
+    "whole_pin_tps": 10.16,
+    "fault_ms": 2.1,
+    "expert_mb": 2.7
+  },
+  "n_token_layer_samples": 311363,
+  "results": [
+    {
+      "top_k": 30,
+      "pinned_per_layer": 24,
+      "pin_gb": 2.83,
+      "coverage": 75.3,
+      "cold_per_token": 69.56,
+      "fault_ms_per_token": 146.1,
+      "est_tps": 4.09
+    },
+    {
+      "top_k": 50,
+      "pinned_per_layer": 40,
+      "pin_gb": 4.62,
+      "coverage": 84.4,
+      "cold_per_token": 43.95,
+      "fault_ms_per_token": 92.3,
+      "est_tps": 5.24
+    },
+    {
+      "top_k": 75,
+      "pinned_per_layer": 60,
+      "pin_gb": 6.87,
+      "coverage": 90.6,
+      "cold_per_token": 26.46,
+      "fault_ms_per_token": 55.6,
+      "est_tps": 6.49
+    },
+    {
+      "top_k": 100,
+      "pinned_per_layer": 80,
+      "pin_gb": 9.11,
+      "coverage": 94.3,
+      "cold_per_token": 16.05,
+      "fault_ms_per_token": 33.7,
+      "est_tps": 7.57
+    },
+    {
+      "top_k": 150,
+      "pinned_per_layer": 119,
+      "pin_gb": 13.59,
+      "coverage": 98.0,
+      "cold_per_token": 5.71,
+      "fault_ms_per_token": 12.0,
+      "est_tps": 9.06
+    },
+    {
+      "top_k": 200,
+      "pinned_per_layer": 159,
+      "pin_gb": 18.07,
+      "coverage": 99.4,
+      "cold_per_token": 1.67,
+      "fault_ms_per_token": 3.5,
+      "est_tps": 9.81
+    }
+  ]
+}

@@ -14,11 +14,11 @@
 |----------|---------|-----------------|----------------------|
 | 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **37.9 t/s** |
 | **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** | **50.2 t/s** |
-| 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85 GB 文件）✅** | **10.1 t/s** |
+| 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85 GB 文件）✅** | **30.9 t/s** |
 
-> 速度 = RTX 4090 实测（2026-08-07，on-demand pin + A3 cache 2048，多架构包）；2080 Ti：Qwen 24.5 t/s、DS 6.89 t/s、V4 0.89-1.07 t/s。详见 [models-benchmark.md](references/models-benchmark.md)。
+> 速度 = RTX 4090 实测（2026-08-10，selective pin + A3 cache 2048，多架构包）；2080 Ti 全链路：Qwen 52.07 t/s、DS-V2-Lite 94.95 t/s。详见 [models-benchmark.md](references/models-benchmark.md)。
 
-**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——RTX 4090 实测 **10.1 t/s**（on-demand pin + A3 cache，显存 17.4GB）；2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
+**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——RTX 4090 实测 **30.9 t/s**（selective pin，RSS 从 84.4GB 降到 **10.4GB，↓88%**，零速度损失）；2080 Ti（11GB）和 RTX 3080（10GB）实测：显存 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶、速度 0.89-2.22 t/s（卡算力极限）。完整报告：[deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **全部已测模型汇总：[models-benchmark.md](references/models-benchmark.md)**
 
 **一行安装（Linux x86_64 + NVIDIA 显卡）：**
 
@@ -75,7 +75,7 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 *实测（RTX 4090）：跨话题 105 轮，RSS 从 9.8GB 涨到 41GB 封顶（峰值 45GB），对比 whole-pin 全量驻留 84GB。动图：[dynpin-curve.gif](docs/demo/dynpin-curve.gif)*
 
-**默认（不设任何环境变量）= whole-pin，保持 v0.3.1 满速**（Qwen 2080 Ti ≈16 t/s、V4 4090 10.1 t/s）；设 `MOE_L2_LRU=1` 才开启本低内存模式。默认 on-demand pin 首次触碰时注册**整个专家 tensor**——最快，但 85GB 模型会把 ~82GB 专家页钉在内存。内存受限机器用 **动态 pin 集合**：只注册实际激活的专家（逐专家、按连续组注册），LRU 淘汰器把冷专家 unregister + madvise 释放。RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M（85GB）实测：**RSS 84GB → 17-24GB**（由 `MOE_L2_LRU_MAX_EXPERTS` 调节），速度 4-5 t/s（新专家首次触碰要付一次缺页读盘；V4 路由极分散——30 轮会话会触及 ~29GB 不同专家）。小 MoE 模型（Qwen3.6-A3B / DS-V2-Lite）工作集小，**保持满速**。
+**默认（不设任何环境变量）= whole-pin，保持 v0.4.0 满速**（Qwen 2080 Ti ≈16 t/s、V4 4090 30.9 t/s）；设 `MOE_L2_LRU=1` 才开启本低内存模式。默认 on-demand pin 首次触碰时注册**整个专家 tensor**——最快，但 85GB 模型会把 ~82GB 专家页钉在内存。内存受限机器用 **动态 pin 集合**：只注册实际激活的专家（逐专家、按连续组注册），LRU 淘汰器把冷专家 unregister + madvise 释放。RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M（85GB）实测：**RSS 84GB → 17-24GB**（由 `MOE_L2_LRU_MAX_EXPERTS` 调节），速度 4-5 t/s（新专家首次触碰要付一次缺页读盘；V4 路由极分散——30 轮会话会触及 ~29GB 不同专家）。小 MoE 模型（Qwen3.6-A3B / DS-V2-Lite）工作集小，**保持满速**。
 
 开启（32GB 内存机器示例）：
 
@@ -86,20 +86,20 @@ MOE_L2_PIN_LAYERS=0-2,14-20,36-37 GGML_OP_OFFLOAD_MIN_BATCH=1 \
 llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
 ```
 
-`MOE_L2_PIN_LAYERS` 把通用层/稀疏层永久 pin（V4 上 L0-L2 + 稀疏层 = ~5.4GB 免费午餐）。调 `MOE_L2_LRU_MAX_EXPERTS`：2000 ≈ 17GB RSS（紧，较慢）/ 12000 ≈ 24GB RSS（V4 约 5.3 t/s）/ 不设 = 关闭淘汰。**权衡总结**：whole-pin = 最快（V4 10.1 t/s）但 82GB 内存；动态 pin = 17-24GB 内存但 V4 4-5 t/s（小模型不受影响）。
+`MOE_L2_PIN_LAYERS` 把通用层/稀疏层永久 pin（V4 上 L0-L2 + 稀疏层 = ~5.4GB 免费午餐）。调 `MOE_L2_LRU_MAX_EXPERTS`：2000 ≈ 17GB RSS（紧，较慢）/ 12000 ≈ 24GB RSS（V4 约 5.3 t/s）/ 不设 = 关闭淘汰。**权衡总结**：whole-pin = 最快（V4 30.9 t/s）但 82GB 内存；selective pin（路由表）= 10.4GB RSS 且 30.9 t/s（v0.4.0 新增）；动态 pin = 17-24GB 内存但 V4 4-5 t/s（小模型不受影响）。
 
-### 多架构二进制（bins-v0.3.2，2026-08-09）
+### 多架构二进制（bins-v0.4.0，2026-08-10）
 
-**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.3.2 含 **on-demand pin 主路径** + **动态 pin 集合（低内存模式）** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ 分层 pin（`MOE_L2_PIN_LAYERS`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）。
+**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.4.0 含 **selective pin（路由表驱动）** + **GPU cache 预填充** + **on-demand pin 主路径** + **动态 pin 集合（低内存模式）** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ 分层 pin（`MOE_L2_PIN_LAYERS`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）。
 
 | 显卡 | 架构 | DS-V2-Lite 生成 | Qwen3.6-A3B 生成 | 显存 |
 |------|------|----------------|-----------------|------|
-| RTX 2080 Ti | sm_75（Turing） | 6.89 t/s | 11.15 t/s | ~1.0-2.4 GB |
+| RTX 2080 Ti | sm_75（Turing） | 94.95 t/s | 52.07 t/s | ~1.0-2.4 GB |
 | RTX 3080 Ti | sm_86（Ampere） | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
 | RTX 5090 | sm_120a（Blackwell） | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
 | RTX 4090* | sm_89（Ada） | 39.0 t/s | 51.5 t/s | 1.6-2.9 GB |
 
-\* 4090 为多架构包实测（2026-08-07，on-demand pin + cache 2048，CUDA 12.8）；2080 Ti / 3080 Ti / 5090 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
+\* 4090 为多架构包实测（2026-08-07，on-demand pin + cache 2048，CUDA 12.8）；2080 Ti 行为 bins-v0.4.0 全链路实测（moe-l2 start --gpu，2026-08-10，比原版 llama.cpp 快 +145~730%）；3080 Ti / 5090 为 v3.1 多架构包（bins-v0.3.0）实测。Qwen 单轮 24.5 t/s（2080 Ti，bins-v0.3.2，旧 host-buffer 11.15 翻倍）。
 
 > 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。注意：llama.cpp 76f46ad 对 SM120a（50 系）内核优化还不成熟——5090 比 3080 Ti 只快 36%（DS）甚至慢 27%（Qwen），换新版 llama.cpp 重编后 50 系速度有望提升。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 
@@ -194,7 +194,7 @@ pip install moe-l2
 ```bash
 moe-l2 download-bins
 ```
-从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.3.2，约 1.9 GB 多架构全兼容包，含 cuda-libs）。
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.4.0，约 2.0 GB 多架构全兼容包，含 cuda-libs）。
 
 ### 3. 启动
 
@@ -236,7 +236,7 @@ moe-l2 stats
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.3.2 约 1.9 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，含 cuda-libs），运行时通过 `moe-l2 download-bins` 获取。
+> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.4.0 约 2.0 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，含 cuda-libs），运行时通过 `moe-l2 download-bins` 获取。
 
 ---
 
@@ -318,6 +318,7 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 - ✅ CLI（start/stats/collect/embed-map/download-bins，自动模型检测，GPU 模式）
 - ✅ host-buffer 专家 GPU 直算（2026-08-02）：DS-V2-Lite 12.5 → 37.5 t/s、Qwen3.6-A3B 10 → 46.8 t/s，VRAM 1.6 / 2.1 GB — 专家驻留 CPU pinned 零显存，调度器只拷激活专家
 - ✅ **on-demand pin 主路径（2026-08-07）**：mmap 惰性加载 + 首次触碰合并注册整个专家 tensor + A3 cache 2048 槽 → Qwen **50.2** / DS **37.9** / V4 **10.1** t/s（4090），V4 从 1.7-2.0 提升 5 倍；修复 CUDA 11.8 跨 register 区间拷贝崩溃
+- ✅ **selective pin + GPU 预填充（2026-08-10，v0.4.0）**：路由表驱动 top-K pin → V4 RSS **84.4 → 10.4GB（↓88%）** 且 **30.9 t/s 零拖累**；GPU cache 预填充让冷启动 round1 10.7 → 19.7 t/s（+84%）。根因澄清：之前 V4 10.1 t/s 是**官方原版 llama.cpp 二进制**——moe-l2 优化版本来就是 ~30 t/s。2080 Ti 全链路：Qwen **52.07** / DS **94.95** t/s（比原版 +145~730%）
 - ✅ cache 挂 sched 拷贝层（2026-08-02）：DS 类模型 Prompt 99 → 308 t/s（+211%，cache=0.25，VRAM 不变）；Qwen/Mixtral 无收益不开
 - ✅ **DeepSeek-V4-Flash（157B MoE）验证通过（2026-08-05）**：85GB 三片 GGUF 在 2080 Ti（11GB）和 RTX 3080（10GB）上跑通——VRAM 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶（`MOE_L2_LRU_MAX_EXPERTS` 固定专家数 LRU）、多分片 GGUF 解析修复已随 0.7.0 发布。速度 0.89-2.22 t/s（卡算力极限）。[完整报告](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI 包（`moe-l2`）

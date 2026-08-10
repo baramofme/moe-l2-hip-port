@@ -6,6 +6,25 @@ Format: Keep a Changelog 1.1 style — Added / Changed / Fixed.
 
 ---
 
+## [0.8.0] - 2026-08-10
+
+### Added
+- **Selective pin (router-map driven)** — opt-in via `MOE_L2_ROUTER_FILE=<router-map>`: pin only the top-K experts per layer from the routing table instead of the whole tensor; experts outside the table fall back to on-demand pin. Measured on RTX 4090 / DeepSeek-V4-Flash (85 GB): RSS **84.4 → 10.4 GB (↓88%)** with **30.9 t/s zero regression** (vs 30.2 whole-pin). Startup 10 s vs 40 s whole-pin.
+- **GPU cache prefill (phase 2)** — preload the top-K experts into the A3 GPU cache at load time: cold-start round1 **10.7 → 19.7 t/s (+84%)**, steady state unchanged (~30-31 t/s).
+- **Flywheel router-map auto-learning** — `moe_l2/domain_router_flywheel.py` aggregates real inference routing (EXPERT log lines), rebuilds the router map at thresholds (5000 records), new domains added automatically; `load_mapping()` prefers the flywheel table, falls back to the static table.
+- **`--router-map` CLI option** + `MOE_L2_ROUTER_FILE` env var; V4 43-layer top-100 map bundled (`moe_l2/data/domain_router_map_v4.json`, `domain_router_map_v4_topics.json`, Qwen `domain_router_map_qwen.json`).
+- bins-v0.4.0 multi-arch binaries (sm_61/75/86/89/120a, CUDA 12.8, no NCCL) — includes selective pin + prefill.
+- **Corrected V4 baseline**: 30.9 t/s (the earlier 10.1 t/s was the **vanilla llama.cpp binary**; the moe-l2 optimized build was always ~30 t/s). 2080 Ti full-chain (moe-l2 start --gpu): Qwen **52.07** / DS-V2-Lite **94.95** t/s (+145~730% vs vanilla).
+
+### Changed
+- Default behavior unchanged (whole-pin); selective pin is opt-in via router file.
+
+### Fixed
+- V4 startup timeout: `_wait_for_llama_server` 30 → 180 s (V4 85 GB loads in ~90 s; the old 30 s always TIMED OUT and killed the server)
+- `maybe_init` GPU cache init exposed via proc-address so prefill runs at the right time.
+
+---
+
 ## [0.7.2] - 2026-08-09
 
 ### Added

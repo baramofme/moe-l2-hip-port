@@ -289,7 +289,14 @@ def load_mapping(path: Optional[str] = None) -> dict:
         The parsed mapping dict.
     """
     if path is None:
-        path = os.path.join(os.path.dirname(__file__), "data", "domain_expert_map.json")
+        # [moe-l2 2026-08-09] 优先读数据飞轮生成的最新路由表（越用越准），
+        # 没有则回退到静态 domain_expert_map.json。
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        flywheel_path = os.path.join(data_dir, "domain_router_map_flywheel.json")
+        if os.path.exists(flywheel_path):
+            path = flywheel_path
+        else:
+            path = os.path.join(data_dir, "domain_expert_map.json")
 
     if not os.path.exists(path):
         raise FileNotFoundError(

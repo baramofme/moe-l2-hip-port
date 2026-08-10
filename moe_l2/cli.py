@@ -41,7 +41,7 @@ _GITHUB_REPO = "yalun753/moe-l2"
 _BINS_ASSET_URL = (
     "https://github.com/{repo}/releases/download/{tag}/llama_bins.tar.gz"
 )
-_DEFAULT_BINS_TAG = "bins-v0.3.2"
+_DEFAULT_BINS_TAG = "bins-v0.4.0"
 
 # Where the bundled llama-server lives (relative to this file)
 _BUNDLE_DIR = Path(__file__).resolve().parent / "bin"
@@ -179,11 +179,18 @@ def _download_bins(tag: str) -> bool:
     return False
 
 
-def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
+def _start_llama_server(
+    model_path: str,
+    port: int,
+    router_map: str | None = None,
+    router_top_k: int = 100,
+) -> subprocess.Popen:
     """Launch bundled llama-server with GPU support (A3 patch enabled).
 
     Sets LD_LIBRARY_PATH to the bundled .so files.
     Uses mmap default so expert tensors stay in CPU RAM.
+    router_map: optional path to selective-pin router map (MOE_L2_ROUTER_FILE).
+    When router_map is None, no selective pin (whole-pin default).
     """
     if not _LLAMA_SERVER_PATH.exists():
         raise FileNotFoundError(
@@ -214,6 +221,12 @@ def _start_llama_server(model_path: str, port: int) -> subprocess.Popen:
     # 门控在线自适应（P2 ④）：输出实时路由日志（EXPERT|Lx|Ty: [...]），
     # 由 proxy/gate 解析后动态调缓存优先级
     env["LLAMA_EXPERT_LOG"] = "1"
+    # [moe-l2 2026-08-10 selective pin] 只 pin 路由表内专家（MOE_L2_ROUTER_FILE），
+    # 表外专家走 on-demand fault 兜底。RSS 从 whole-tensor 降到 top-K 专家集。
+    # router_map 为 None 时不启用（保持 whole-pin 默认）。
+    if router_map:
+        env["MOE_L2_ROUTER_FILE"] = router_map
+        print(f"  selective pin: router map = {router_map} (top-k={router_top_k})")
     # [moe-l2 2026-08-07 修订] on-demand pin 已编译进二进制（ggml_cuda_expert_pin_host：
     # 首次触碰时合并注册整个专家 tensor，MOEL2_WHOLE_PIN 默认开），无需环境变量。
     # 旧逻辑（GGML_CUDA_REGISTER_HOST=1 按模型大小开关）基于"lazy+REGISTER_HOST=46.7"
@@ -277,8 +290,12 @@ def _spawn_gate_reader(proc: subprocess.Popen, gate):
     return _GateReaderThread(proc, gate)
 
 
-def _wait_for_llama_server(port: int, timeout: float = 30.0) -> bool:
-    """Poll until llama-server responds on /health."""
+def _wait_for_llama_server(port: int, timeout: float = 180.0) -> bool:
+    """Poll until llama-server responds on /health.
+
+    [moe-l2 2026-08-09] timeout 30→180s：V4 85GB 模型加载约 90s，原 30s 导致
+    大模型 start 必失败（TIMEOUT → communicate(5) → kill）。180s 覆盖 V4 加载。
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -336,6 +353,27 @@ def main():
             "Enable GPU-accelerated inference with bundled llama-server. "
             "Requires CUDA + NVIDIA GPU. Uses the A3 tiered expert scheduler "
             "to fit large MoE models in limited VRAM."
+        ),
+    )
+    start_parser.add_argument(
+        "--router-map",
+        type=str,
+        default=None,
+        help=(
+            "[moe-l2 2026-08-10 selective pin] Path to router map file (format: "
+            "'layer expert1 expert2 ...' per line). When set, llama-server only "
+            "pins experts listed in the map (RSS = top-K experts, not whole tensor). "
+            "If omitted, moe-l2 auto-generates one from the flywheel/static table "
+            "with --router-top-k."
+        ),
+    )
+    start_parser.add_argument(
+        "--router-top-k",
+        type=int,
+        default=100,
+        help=(
+            "[moe-l2 2026-08-10] Top-K experts per layer for auto-generated router "
+            "map (default: 100). Only used when --router-map is not given."
         ),
     )
 
@@ -744,7 +782,42 @@ def cmd_start(args):
             return 1
 
         try:
-            llama_proc = _start_llama_server(model_path, _GPU_PORT)
+            # [moe-l2 2026-08-10 selective pin] 自动生成 router map（若未指定且
+            # 本地有路由表）；显式 --router-map 优先。
+            router_map_path = getattr(args, "router_map", None)
+            router_top_k = getattr(args, "router_top_k", 100)
+            if router_map_path is None:
+                try:
+                    from scripts.bench.export_router_map import (
+                        load_tables,
+                        parse_table,
+                        union_layers,
+                    )
+                    data_dir = Path(__file__).resolve().parent.parent / "moe_l2" / "data"
+                    fly, topics, agg = load_tables(str(data_dir))
+                    tables = []
+                    for p in (fly, topics, agg):
+                        if p:
+                            tables.append(parse_table(p))
+                    if tables:
+                        union = union_layers(tables)
+                        # top-k 截断（并集通常 < top-k，一般不触发）
+                        import tempfile
+                        tmp = tempfile.NamedTemporaryFile(
+                            "w", suffix=".router.map", delete=False, prefix="moe-l2-router-"
+                        )
+                        for layer in sorted(union.keys()):
+                            experts = sorted(union[layer])[:router_top_k]
+                            tmp.write(f"{layer} " + " ".join(str(e) for e in experts) + "\n")
+                        tmp.close()
+                        router_map_path = tmp.name
+                        print(
+                            f"  selective pin: auto-generated router map "
+                            f"({len(union)} layers, top-k={router_top_k}) -> {router_map_path}"
+                        )
+                except Exception as e:
+                    print(f"  selective pin: router map generation skipped ({e})")
+            llama_proc = _start_llama_server(model_path, _GPU_PORT, router_map_path, router_top_k)
         except FileNotFoundError as e:
             print(f"  ERROR: {e}")
             return 1
@@ -766,13 +839,22 @@ def cmd_start(args):
     # ── 门控在线自适应（P2 ④）：实时路由 → 动态调缓存优先级 ──
     gate = None
     gate_thread = None
+    router_flywheel = None
     if args.gpu and llama_proc is not None:
         from .gate import RoutingProfiler
         from .predictor import load_mapping
         try:
-            gate = RoutingProfiler(cache=cache, expert_map=load_mapping())
+            # [moe-l2 2026-08-09] 路由表数据飞轮：真实路由按领域聚合 → 自动更新路由表
+            from .domain_router_flywheel import DomainRouterFlywheel
+            router_flywheel = DomainRouterFlywheel()
+            gate = RoutingProfiler(
+                cache=cache,
+                expert_map=load_mapping(),
+                router_flywheel=router_flywheel,
+            )
             gate_thread = _spawn_gate_reader(llama_proc, gate)
             print("  gate:     online routing adaptation (LLAMA_EXPERT_LOG) enabled")
+            print("  flywheel: router map auto-rebuild (domain_router_map_flywheel.json)")
         except Exception as e:
             logger.warning("Gate init failed (non-fatal): %s", e)
             gate = None

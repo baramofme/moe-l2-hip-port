@@ -50,10 +50,13 @@ class RoutingProfiler:
         cache=None,
         expert_map: dict | None = None,
         drift_threshold: float = 0.35,
+        router_flywheel=None,
     ):
         self.cache = cache
         self.expert_map = expert_map or {}
         self.drift_threshold = drift_threshold
+        # [moe-l2 2026-08-09] 路由表数据飞轮（可选，None = 不启用，向后兼容）
+        self.router_flywheel = router_flywheel
 
         # 窗口内激活记录（FIFO，用于漂移对比）
         self._window: deque[tuple[int, int]] = deque(maxlen=_WINDOW_LINES)
@@ -94,8 +97,21 @@ class RoutingProfiler:
             self._maybe_promote()
             self._detect_drift()
 
+        # [moe-l2 2026-08-09] 路由表数据飞轮：真实路由 → 按领域聚合
+        if self.router_flywheel is not None:
+            try:
+                self.router_flywheel.on_expert_line(line)
+            except Exception as e:
+                logger.warning("Router flywheel line failed (non-fatal): %s", e)
+
     def on_request(self, domain: str) -> None:
         """请求级信号：领域切换 → 主动预热目标域。"""
+        # [moe-l2 2026-08-09] 先同步领域给飞轮（聚合按当前领域归组）
+        if self.router_flywheel is not None:
+            try:
+                self.router_flywheel.set_domain(domain)
+            except Exception as e:
+                logger.warning("Router flywheel set_domain failed (non-fatal): %s", e)
         if self.cache is None or self.expert_map is None:
             return
         try:

@@ -6,6 +6,9 @@ based on domain prediction before forwarding the request.
 
 import json
 import logging
+import mmap
+import os
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
 
@@ -24,6 +27,131 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 11435
 OLLAMA_BASE = "http://127.0.0.1:11434"
 LLAMA_SERVER_BASE = "http://127.0.0.1:11436"
+
+# L0a × 动态 pin 联动（2026-08-09，见 历史记录文档/方案-L0a动态pin联动-20260809.md）
+# MOE_L2_MODEL_PATH: 模型 GGUF 路径（预 touch 需要）；不设 = 跳过
+# MOE_L2_PRETOUCH_GB: 预 touch 预算（默认 8GB，0 = 关闭）
+_PRETOUCH_GB = float(os.environ.get("MOE_L2_PRETOUCH_GB", "8"))
+_MODEL_PATH = os.environ.get("MOE_L2_MODEL_PATH", "") or None
+_PAGE = 4096
+
+
+class _ExpertPretoucher:
+    """把预测领域的专家页提前喂进 page cache。
+
+    动态 pin（C++）首次注册专家时对 mmap 页做 cudaHostRegister，缺页要付
+    ~1.7ms 读盘。这里用预测领域 → 专家 ID → GGUF 文件偏移，在请求间隙
+    后台 touch 这些页（每页读 1 字节），让首次 fault 命中 page cache 免读盘。
+    """
+
+    def __init__(self, model_path: str, budget_gb: float):
+        self.model_path = model_path
+        self.budget_bytes = int(budget_gb * 1024 ** 3)
+        self._shard_readers: list[tuple[str, object]] = []
+        self._tensor_index: dict[str, tuple[str, object]] = {}
+        self._pages_cache: dict[str, list[tuple[str, int]]] = {}
+        self._lock = threading.Lock()
+        self._EXPERT_PATTERNS = [
+            "ffn_gate_exps.weight",
+            "ffn_up_exps.weight",
+            "ffn_down_exps.weight",
+        ]
+
+    def _load_reader(self):
+        """多分片 GGUF 索引：主片可能只有元数据（0 tensor），
+        权重 tensor 分布在 -0000X-of-0000Y.gguf 分片里。
+        field.offset 是分片内偏移，touch 时按分片文件分别 open。"""
+        if self._shard_readers:
+            return
+        import glob
+
+        from gguf import GGUFReader
+        d = os.path.dirname(os.path.abspath(self.model_path))
+        b = os.path.basename(self.model_path)
+        pattern = b.replace("-00001-of-", "-*-of-") if "-00001-of-" in b else b
+        shards = sorted(glob.glob(os.path.join(d, pattern)))
+        if not shards:
+            shards = [self.model_path]
+        for sp in shards:
+            rd = GGUFReader(sp)
+            self._shard_readers.append((sp, rd))
+            for t in rd.tensors:
+                self._tensor_index[t.name] = (sp, t)
+        logger.info(
+            "Pretouch index: %d shards, %d tensors",
+            len(shards), len(self._tensor_index))
+
+    def _expert_pages_for(self, domain: str, expert_map: dict) -> list[tuple[str, int]]:
+        """预测领域专家 → (分片路径, 页偏移) 列表（去重、预算截断）。"""
+        with self._lock:
+            if domain in self._pages_cache:
+                return self._pages_cache[domain]
+            self._load_reader()
+            domains = (expert_map or {}).get("domains", {})
+            per_layer = (domains.get(domain, {}) or {}).get(
+                "per_layer_domain_preferred", {})
+            pages: list[tuple[str, int]] = []
+            seen: set[int] = set()
+            spent = 0
+            for layer_str, expert_ids in per_layer.items():
+                try:
+                    layer = int(layer_str)
+                except (TypeError, ValueError):
+                    continue
+                for eid in expert_ids or []:
+                    for pattern in self._EXPERT_PATTERNS:
+                        hit = self._tensor_index.get(f"blk.{layer}.{pattern}")
+                        if hit is None:
+                            continue  # 分片/层不匹配，跳过
+                        shard_path, t = hit
+                        bpe = t.n_bytes // t.data.shape[0]
+                        start = t.field.offset + int(eid) * bpe
+                        end = min(start + bpe, t.field.offset + t.n_bytes)
+                        pg = start // _PAGE * _PAGE
+                        while pg < end and spent < self.budget_bytes:
+                            if pg not in seen:
+                                seen.add(pg)
+                                pages.append((shard_path, pg))
+                                spent += _PAGE
+                            pg += _PAGE
+                        if spent >= self.budget_bytes:
+                            break
+                    if spent >= self.budget_bytes:
+                        break
+                if spent >= self.budget_bytes:
+                    break
+            self._pages_cache[domain] = pages
+            logger.info(
+                "Pretouch offsets domain=%s: %d pages (%.2f GB)",
+                domain, len(pages), spent / 1024 ** 3)
+            return pages
+
+    def touch(self, domain: str, expert_map: dict):
+        """后台线程入口：touch 预测领域专家页。失败只警告，不影响转发。"""
+        if not self.model_path or not os.path.exists(self.model_path):
+            return
+        try:
+            pages = self._expert_pages_for(domain, expert_map)
+            if not pages:
+                return
+            # 按分片分组，逐文件 mmap touch
+            by_shard: dict[str, list[int]] = {}
+            for sp, pg in pages:
+                by_shard.setdefault(sp, []).append(pg)
+            for sp, pgs in by_shard.items():
+                with open(sp, "rb") as f:
+                    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                    try:
+                        for pg in pgs:
+                            _ = mm[pg]  # 每页读 1 字节 → 页驻留 page cache
+                    finally:
+                        mm.close()
+            logger.info(
+                "Pretouched %d pages for domain=%s (%d shards)",
+                len(pages), domain, len(by_shard))
+        except Exception as e:
+            logger.warning("Pretouch failed (non-fatal): %s", e)
+
 
 # Headers NOT forwarded to the client (hop-by-hop or internal)
 _HOP_BY_HOP = frozenset({
@@ -44,13 +172,32 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
 
     def _predict_and_preload(self, text: str):
         """Predict domain and trigger expert preload + flywheel sampling."""
-        if not self.cache:
+        # L0a touch 独立于 L2 cache：动态 pin 场景不依赖 /dev/shm
+        touch_enabled = bool(_MODEL_PATH and _PRETOUCH_GB > 0)
+        if not self.cache and not touch_enabled:
             return
         try:
             # 三层预测：关键词 → TF-IDF 分类器 → 语义兜底（提升样本标签质量）
             enable_tfidf()  # 惰性加载，缺 sklearn 时静默降级
             domain = predict_hybrid(text)
             logger.info("Predicted domain: %s", domain)
+
+            # L0a × 动态 pin 联动：后台预 touch 预测领域专家页（不阻塞转发）
+            if touch_enabled:
+                try:
+                    if getattr(self, "_pretoucher", None) is None:
+                        self._pretoucher = _ExpertPretoucher(
+                            _MODEL_PATH, _PRETOUCH_GB)
+                    expert_map = load_mapping()
+                    t = threading.Thread(
+                        target=self._pretoucher.touch,
+                        args=(domain, expert_map), daemon=True)
+                    t.start()
+                except Exception as pe:
+                    logger.warning("Pretouch thread failed (non-fatal): %s", pe)
+
+            if not self.cache:
+                return
             expert_map = load_mapping()
             self.cache.preload_domain(domain, expert_map)
             logger.info("Preloaded experts for domain=%s", domain)
