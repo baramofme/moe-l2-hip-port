@@ -32,9 +32,9 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 ### Low-memory mode: dynamic pin set (2026-08-09)
 
-![Dynamic pin measured RSS curve — 105 cross-topic rounds capped at 41 GB (peak 45 GB) vs 84 GB whole-pin, DeepSeek-V4-Flash UD-IQ2_M on RTX 4090](docs/demo/fig4-dynpin-rss-curve.png)
+![Dynamic pin measured RSS curve — 105 cross-topic rounds capped at 45 GB vs 84 GB whole-pin; selective pin 26.8 GB / on-demand 17.5 GB stable lines, DeepSeek-V4-Flash UD-IQ2_M on RTX 4090](docs/demo/fig4-dynpin-rss-curve.png)
 
-*Measured on RTX 4090: 105 cross-topic chat rounds, RSS 9.8 → 41 GB capped (peak 45 GB), vs 84 GB whole-pin. Animated: [dynpin-curve.gif](docs/demo/dynpin-curve.gif)*
+*Measured on RTX 4090 (2026-08-09/10): dynamic pin 105 cross-topic rounds RSS 9.8 → 45 GB capped; whole-pin 84 GB. 2026-08-10 selective pin 26.8 GB / on-demand fallback 17.5 GB (bins-v0.4.0). Animated: [dynpin-curve.gif](docs/demo/dynpin-curve.gif)*
 
 **Default (no env vars) = whole-pin at full v0.4.0 speed** (Qwen 2080 Ti ≈16 t/s, V4 4090 30.9 t/s); set `MOE_L2_LRU=1` to enable this low-memory mode. The default on-demand pin registers the **whole expert tensor** on first touch — fastest but pins ~82 GB of expert pages in RAM for 85 GB models. For memory-constrained machines, **dynamic pin set** registers only the experts actually activated (per-expert, group-registered), and the LRU evictor unregisters + madvises cold experts. Measured on RTX 4090 / DeepSeek-V4-Flash-UD-IQ2_M (85 GB): **RSS 84 GB → 17-24 GB** (configurable via `MOE_L2_LRU_MAX_EXPERTS`), speed 4-5 t/s (new experts pay a first-touch page-fault; V4 routes extremely wide — a 30-turn session touches ~29 GB of distinct experts). Small MoE models (Qwen3.6-A3B / DS-V2-Lite) keep full speed — their working sets fit any budget.
 
