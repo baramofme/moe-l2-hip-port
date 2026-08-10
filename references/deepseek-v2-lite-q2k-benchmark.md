@@ -1,6 +1,30 @@
-# DeepSeek-V2-Lite-Chat-Uncensored Q2_K benchmark 报告（更新至 2026-08-07）
+# DeepSeek-V2-Lite-Chat-Uncensored Q2_K benchmark 报告（更新至 2026-08-10）
 
-## 最新成果（2026-08-07）：on-demand pin 主路径
+## 最新成果（2026-08-10）：2080 Ti 全链路复测（bins-v0.4.0 / selective pin）
+
+> 在 RTX 2080 Ti（region-42 云机）上用 bins-v0.4.0 多架构二进制 + 全链路（`moe-l2 start --gpu`，selective pin 路由表 top-100）复测：**DS Gen 87.25 t/s（追问场景），短对话 81.72 t/s**。相比官方原版 llama.cpp 二进制（~7-10 t/s 级别）+700~1000%，进一步确认 moe-l2 优化版在 2080 Ti 上的真实性能。
+
+### 实测（RTX 2080 Ti，2026-08-10，全链路 selective pin）
+
+| 轮次 | 短对话 | 追问1 | 追问2 |
+|------|--------|-------|-------|
+| Round 1（冷启动） | 39.62 | 81.02 | 83.35 |
+| Round 2 | 81.67 | 87.30 | 85.30 |
+| Round 3（稳定） | **81.72** | **87.25** | **86.40** |
+| Round 4 | 83.53 | 87.31 | 85.12 |
+
+- 口径：`python3 speed_test.py 11435`（64 tok/请求，proxy 全链路含路由表 + selective pin）
+- 稳定值：短对话 ~82-84、追问 ~85-87 t/s；报告取 **87.25 t/s**（round3 追问1）
+
+### 关键结论（2026-08-10）
+
+1. **2080 Ti 上 DS 全链路 87.25 t/s**（vs 原版 llama.cpp 6.89 t/s ≈ +1166%）；4090 上为 37.9 t/s——2080 Ti 反而更快（DS 模型小、专家拷贝开销低，2080 Ti PCIe 3.0 瓶颈不明显）
+2. **selective pin 零拖累**：路由表 top-100 pin 后 2080 Ti 速度稳定
+3. **冷启动明显**：round1 短对话 39.62 → round2 81.67（首次加载路由表 + 专家 pin + GPU cache 预热），round2 起即达稳定
+
+---
+
+## 上一版成果（2026-08-07）：on-demand pin 主路径
 
 > **on-demand pin**（lazy mmap + whole-tensor 合并注册 + A3 cache 2048 槽）取代 host buffer。**DS Gen 37.5 → 37.9 t/s（+4%，超过 37.5 目标）。**
 

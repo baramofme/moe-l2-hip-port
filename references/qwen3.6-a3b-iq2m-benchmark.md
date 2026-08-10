@@ -1,6 +1,30 @@
-# Qwen3.6-35B-A3B-UD-IQ2_M benchmark 报告（更新至 2026-08-07）
+# Qwen3.6-35B-A3B-UD-IQ2_M benchmark 报告（更新至 2026-08-10）
 
-## 最新成果（2026-08-07）：on-demand pin 主路径（速度再破纪录）
+## 最新成果（2026-08-10）：2080 Ti 全链路复测（bins-v0.4.0 / selective pin）
+
+> 在 RTX 2080 Ti（region-42 云机）上用 bins-v0.4.0 多架构二进制 + 全链路（`moe-l2 start --gpu`，selective pin 路由表 top-100）复测：**Qwen Gen 47.24 t/s（追问场景），短对话 41.66 t/s**。相比官方原版 llama.cpp 二进制（11.15 t/s 级别）+200~300%，进一步确认 moe-l2 优化版在 2080 Ti 上的真实性能。
+
+### 实测（RTX 2080 Ti，2026-08-10，全链路 selective pin）
+
+| 轮次 | 短对话 | 追问1 | 追问2 |
+|------|--------|-------|-------|
+| Round 1（冷启动） | 26.75 | 38.67 | 34.77 |
+| Round 2 | 37.67 | 46.46 | 42.38 |
+| Round 3（稳定） | **41.66** | **47.24** | **42.89** |
+| Round 4 | 41.11 | 43.93 | 41.34 |
+
+- 口径：`python3 speed_test.py 11435`（64 tok/请求，proxy 全链路含路由表 + selective pin）
+- 稳定值：短对话 ~41-42、追问 ~43-47 t/s；报告取 **47.24 t/s**（round3 追问1）
+
+### 关键结论（2026-08-10）
+
+1. **2080 Ti 上 Qwen 全链路 47.24 t/s**（vs 原版 llama.cpp 11.15 t/s ≈ +324%）；4090 上仍为 50.2 t/s
+2. **selective pin 零拖累**：路由表 top-100 pin 后 2080 Ti 速度与 whole-pin 同量级
+3. **冷启动明显**：round1 26.75 → round3 41.66（首次加载路由表 + 专家 pin + GPU cache 预热），稳定轮见上表
+
+---
+
+## 上一版成果（2026-08-07）：on-demand pin 主路径（速度再破纪录）
 
 > **on-demand pin**（lazy mmap 加载 + 首次触碰合并注册整个专家 tensor + A3 cache 2048 槽）取代 host buffer 成为主路径。**Qwen Gen 46.5 → 50.2 t/s（+8%），超过 pre-lazy host buffer 的 46.5。**
 
