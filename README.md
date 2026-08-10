@@ -57,12 +57,12 @@ One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-
 |-----|-------------|----------------|-----------------|------|
 | RTX 2080 Ti | sm_75 (Turing) | 87.25 t/s | 47.24 t/s | ~1.0-2.4 GB |
 | RTX 3080 Ti | sm_86 (Ampere) | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
-| RTX 5090 | sm_120a (Blackwell) | 16.63 t/s | 9.71 t/s | ~1.3-2.5 GB |
+| RTX 5090 | sm_120a (Blackwell) | 135.57 t/s | 76.41 t/s | ~1.3-2.5 GB |
 | RTX 4090* | sm_89 (Ada) | 39.0 t/s | 51.5 t/s | 1.6-2.9 GB |
 
-\* 4090 measured with the multi-arch package (2026-08-07, on-demand pin + cache 2048, CUDA 12.8); 2080 Ti row = bins-v0.4.0 full-chain (moe-l2 start --gpu, selective pin, 2026-08-10 re-measured: Qwen 47.24 / DS 87.25 t/s, +200~700% vs vanilla); 3080 Ti / 5090 rows are v3.1 multi-arch (bins-v0.3.0). Qwen single-turn 24.5 t/s on 2080 Ti (bins-v0.3.2, 2x vs old host-buffer 11.15).
+\* 4090 measured with the multi-arch package (2026-08-07, on-demand pin + cache 2048, CUDA 12.8); 2080 Ti row = bins-v0.4.0 full-chain (moe-l2 start --gpu, selective pin, 2026-08-10 re-measured: Qwen 47.24 / DS 87.25 t/s, +200~700% vs vanilla); 5090 row = bins-v0.4.0 full-chain (2026-08-10: Qwen 76.41 / DS 135.57 t/s, +687~715% vs vanilla); 3080 Ti row is v3.1 multi-arch (bins-v0.3.0). Qwen single-turn 24.5 t/s on 2080 Ti (bins-v0.3.2, 2x vs old host-buffer 11.15).
 
-> Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). Note: SM120a (RTX 50) kernel efficiency in llama.cpp 76f46ad is not yet mature — RTX 5090 shows only +36% over 3080 Ti on DS and −27% on Qwen; a newer llama.cpp rebuild should improve 50-series speed. Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md) · **DeepSeek V4 Flash (157B) dual-GPU run: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)**
+> Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). 2026-08-10 bins-v0.4.0 full-chain re-measurements: 5090 DS **135.57** / Qwen **76.41** t/s (vanilla llama.cpp binary was 16.63/9.71 — moe-l2 optimization unlocks Blackwell). Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md) · **DeepSeek V4 Flash (157B) dual-GPU run: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)**
 
 ## Quick start
 
