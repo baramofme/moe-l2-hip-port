@@ -160,7 +160,7 @@
 1. **V4 在 4090 上稳定 34-36 t/s**（两模式一致）——对比原版 llama.cpp 二进制（10.1 t/s）**+255%**；比阶段1（30.9 t/s）略高
 2. **RSS 大幅缩减**：whole-pin 84GB → on-demand 17.5GB（↓79%）/ selective pin 26.8GB（↓68%）
 3. 阶段1 的 10.4GB RSS 是纯 selective pin 无 prefill 配置；本次含 GPU cache 预填充所以 RSS 更高、速度更快
-4. **注意**：auto 生成路由表（`--router-top-k`）在 V4 上生成 0 层（无现成静态表），实际走 on-demand 兜底；要启用 selective pin 需显式传 `--router-map v4_top100.map`（43 层 top-100，本地备份 `测试数据备份/v0.8.0-selective-pin-20260810/router-map/`）
+4. **auto 生成路由表已正常**：`--router-top-k` 依赖 `moe_l2/data/` 下的 `domain_router_map_v4_topics.json` / `domain_router_map_v4.json`（pip 安装自带，git 仓库已追踪）。2026-08-10 验证：数据文件就位后 auto 生成 **43 层 top-100**（与显式 v4_top100.map 内容一致），selective pin 生效（RSS 28.1GB）；此前 08-10 早间测试出现 0 层是测试机未同步 data/ 目录所致，非产品缺陷。显式 `--router-map v4_top100.map`（43 层 top-100，本地备份 `测试数据备份/v0.8.0-selective-pin-20260810/router-map/`）仍可作兜底。
 
 ## 环境坑（复现用）
 
