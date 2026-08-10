@@ -69,7 +69,19 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 > 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试（2026-08-10，selective pin + A3 cache 2048 槽）：专家驻留 CPU RAM（零显存），路由表预 pin 高频专家，调度器每步只把**激活的专家**拷到 GPU 直算，热专家缓存在 GPU 显存。DS-V2-Lite **145.63 t/s**（4.9GB 显存、2.1GB RSS），Qwen3.6-A3B **74.99 t/s**（3.1GB 显存、2.3GB RSS）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark](references/models-benchmark.md)
 
-### 低内存模式：动态 pin 集合（2026-08-09）
+### Selective pin — 低内存主路径（2026-08-10，v0.4.0）
+
+![Selective pin RSS 对比——whole-pin 84GB vs selective pin 26.8GB vs on-demand 17.5GB，DeepSeek-V4-Flash UD-IQ2_M @ RTX 4090](docs/demo/fig5-selective-pin-rss.png)
+
+*实测（RTX 4090，2026-08-10，bins-v0.4.0）：whole-pin 84GB / 30.9 t/s → selective pin 26.8GB / 34.67 t/s（路由表 top-K）→ on-demand 兜底 17.5GB / 35.96 t/s。RSS 降 68% 速度反升。另见 [速度 vs 内存散点图](docs/demo/fig5b-selective-pin-speed-rss.png)。*
+
+**selective pin 是当前主路径（v0.4.0）**——路由表（每层 top-K 专家，如 `v4_top100.map` 43 层）预 pin 高频专家为 host-pinned，表外专家走 on-demand 兜底。不设环境变量时保持 whole-pin 默认；`moe-l2 start --gpu` 传 `--router-map <文件>` 或 `--router-top-k N`：
+
+```bash
+moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
+```
+
+### 低内存模式：动态 pin 集合（2026-08-09，旧版）
 
 ![动态 pin 实测 RSS 曲线——105 轮跨话题封顶 45GB vs whole-pin 84GB；selective pin 26.8GB / on-demand 17.5GB 稳定线，DeepSeek-V4-Flash UD-IQ2_M @ RTX 4090](docs/demo/fig4-dynpin-rss-curve.png)
 

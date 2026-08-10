@@ -30,7 +30,19 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 
 > We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with **selective pin** (router-map driven top-K, bins-v0.4.0, 2026-08-10): experts stay in CPU RAM (zero VRAM), the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **145.63 t/s** (4.9 GB VRAM, 2.1 GB RSS), Qwen3.6-A3B **74.99 t/s** (3.1 GB VRAM, 2.3 GB RSS). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark.md](references/models-benchmark.md)
 
-### Low-memory mode: dynamic pin set (2026-08-09)
+### Selective pin — 低内存主路径（2026-08-10, v0.4.0）
+
+![Selective pin RSS comparison — whole-pin 84 GB vs selective pin 26.8 GB vs on-demand 17.5 GB, DeepSeek-V4-Flash UD-IQ2_M on RTX 4090](docs/demo/fig5-selective-pin-rss.png)
+
+*Measured on RTX 4090 (2026-08-10, bins-v0.4.0): whole-pin 84 GB / 30.9 t/s → selective pin 26.8 GB / 34.67 t/s (router-map top-K) → on-demand 17.5 GB / 35.96 t/s. RSS −68% with speed **up**. Also: [speed vs RSS scatter](docs/demo/fig5b-selective-pin-speed-rss.png).*
+
+**Selective pin is the current main path (v0.4.0)** — a router map (top-K experts per layer, e.g. `v4_top100.map` 43 layers) pre-pins the hot experts as host-pinned; experts outside the map fall back to on-demand pin. No env vars needed for whole-pin default; pass `--router-map <file>` or `--router-top-k N` to `moe-l2 start --gpu`:
+
+```bash
+moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
+```
+
+### Low-memory mode: dynamic pin set (2026-08-09, legacy)
 
 ![Dynamic pin measured RSS curve — 105 cross-topic rounds capped at 45 GB vs 84 GB whole-pin; selective pin 26.8 GB / on-demand 17.5 GB stable lines, DeepSeek-V4-Flash UD-IQ2_M on RTX 4090](docs/demo/fig4-dynpin-rss-curve.png)
 
