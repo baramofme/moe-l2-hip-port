@@ -47,15 +47,7 @@ moe-l2 model download --model <name> # 下载模型（断点续传，走 hf-mirr
 
 连接 `localhost:11435`，现有工具（curl、Open WebUI、LangChain）无需改配置。
 
----
-
-## moe-l2 能帮你解决什么
-
-MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。标准推理栈会把所有 expert 全塞进显存——80-95% 的内存被闲置权重白白占用。
-
-**moe-l2 只让活跃 expert 驻留 GPU，其余留在内存或硬盘，需要时再换入。**
-
-### 实测数据
+### Benchmarked on RTX 4090（2026-08-10，selective pin 主路径）
 
 基于 **RTX 4090** 实测（2026-08-10，selective pin 主路径：路由表驱动 top-K pin + GPU cache 预填充，bins-v0.4.0）：
 
@@ -69,6 +61,7 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 
 > 我们在 RTX 4090 上对 **Qwen3.6-A3B**（32B MoE）和 **DeepSeek-V2-Lite**（16B MoE，64 expert）做了全量测试（2026-08-10，selective pin + A3 cache 2048 槽）：专家驻留 CPU RAM（零显存），路由表预 pin 高频专家，调度器每步只把**激活的专家**拷到 GPU 直算，热专家缓存在 GPU 显存。DS-V2-Lite **145.63 t/s**（4.9GB 显存、2.1GB RSS），Qwen3.6-A3B **74.99 t/s**（3.1GB 显存、2.3GB RSS）。完整报告：[Qwen3.6](references/qwen3.6-a3b-iq2m-benchmark.md) · [DS-V2-Lite](references/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark](references/models-benchmark.md)
 
+
 ### Selective pin — 低内存主路径（2026-08-10，v0.4.0）
 
 ![Selective pin RSS 对比——whole-pin 84GB vs selective pin 26.8GB vs on-demand 17.5GB，DeepSeek-V4-Flash UD-IQ2_M @ RTX 4090](docs/demo/fig5-selective-pin-rss.png)
@@ -80,6 +73,7 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 ```bash
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 ```
+
 
 ### 多架构二进制（bins-v0.4.0，2026-08-10）
 
@@ -96,6 +90,57 @@ moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 
 > 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。2026-08-10 bins-v0.4.0 全链路复测：5090 DS **135.57** / Qwen **76.41** t/s（原版 llama.cpp 二进制仅 16.63/9.71——moe-l2 优化释放 Blackwell 真实性能）。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 
+
+## 快速开始
+
+### 1. 安装
+
+```bash
+pip install moe-l2
+```
+
+### 2. 下载 GPU 二进制（仅 `--gpu` 模式需要）
+
+```bash
+moe-l2 download-bins
+```
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.4.0，约 2.0 GB 多架构全兼容包，含 cuda-libs）。
+
+### 3. 启动
+
+**GPU 模式（推荐，on-demand pin 专家 GPU 直算，省 93% 显存）：**
+```bash
+moe-l2 start --model /path/to/model.gguf --gpu
+```
+
+**纯代理模式**（不省显存，仅 expert 缓存）：
+```bash
+moe-l2 start --model /path/to/model.gguf --l2-size 4GB
+```
+
+代理启动在 `localhost:11435`，直接当普通 OpenAI 兼容接口用就行（GPU 模式下后端 llama-server 监听 11436）。
+
+### 4. 看统计
+
+```bash
+moe-l2 stats
+# → 命中率: 85% · 槽位: 320/960 · 当前领域: codegen
+```
+
+---
+
+
+## 工作原理（简版）
+
+1. 你的 prompt 到达 moe-l2 代理
+2. 领域预测器分类（代码生成 → 数学 → 中文技术 ……）
+3. 专家权重 lazy mmap 驻留 CPU RAM（**零显存**），首次激活即 pinned（on-demand pin）——不再整体塞进 GPU
+4. GPU 经 PCIe DMA 直读激活专家（cuBLAS），热专家驻留 VRAM（A3 LRU 2048 槽），冷页 v3.1 淘汰
+5. 可选 sched-cache（`GGML_CUDA_EXPERT_CACHE=0.25`）：命中热专家走 D2D 免 PCIe，DS 类模型 Prompt +211%
+
+---
+
+
 ### 可视化演示（RTX 4090，2026-08-10）
 
 | Qwen3.6-35B-A3B（32B MoE）— 标准 vs moe-l2 | DeepSeek-V2-Lite（16B MoE）— 8GB 卡 vs 24GB 卡 |
@@ -111,6 +156,23 @@ moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 [`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4)（45 秒，1280×720）· 原始采样：[`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · 生成全文：[`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
 
 ---
+
+
+## 适用场景
+
+### ✅ 适合
+- **单人聊天** — 用 4-12 GB 显卡跑大 MoE 模型
+- **测试和实验** — 在预算硬件上玩 MoE 架构
+- **家庭实验室 / 边缘部署** — 每一 GB 显存都珍贵
+- **研究 expert 缓存**、分层调度、领域感知预加载
+
+### ❌ 不适合
+- 高并发 API 服务（频繁换 expert 产生 I/O 瓶颈）
+- 对延迟敏感的应用（SSD 缓存缺失导致速度波动）
+- 机械硬盘作存储 — **需要 NVMe 固态**
+
+---
+
 
 ## 系统架构
 
@@ -159,58 +221,6 @@ L3 ─ SSD 冷存储    GGUF 文件 mmap，冷专家页按需读入 + v3.1 淘�
 
 ---
 
-## 适用场景
-
-### ✅ 适合
-- **单人聊天** — 用 4-12 GB 显卡跑大 MoE 模型
-- **测试和实验** — 在预算硬件上玩 MoE 架构
-- **家庭实验室 / 边缘部署** — 每一 GB 显存都珍贵
-- **研究 expert 缓存**、分层调度、领域感知预加载
-
-### ❌ 不适合
-- 高并发 API 服务（频繁换 expert 产生 I/O 瓶颈）
-- 对延迟敏感的应用（SSD 缓存缺失导致速度波动）
-- 机械硬盘作存储 — **需要 NVMe 固态**
-
----
-
-## 快速开始
-
-### 1. 安装
-
-```bash
-pip install moe-l2
-```
-
-### 2. 下载 GPU 二进制（仅 `--gpu` 模式需要）
-
-```bash
-moe-l2 download-bins
-```
-从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.4.0，约 2.0 GB 多架构全兼容包，含 cuda-libs）。
-
-### 3. 启动
-
-**GPU 模式（推荐，on-demand pin 专家 GPU 直算，省 93% 显存）：**
-```bash
-moe-l2 start --model /path/to/model.gguf --gpu
-```
-
-**纯代理模式**（不省显存，仅 expert 缓存）：
-```bash
-moe-l2 start --model /path/to/model.gguf --l2-size 4GB
-```
-
-代理启动在 `localhost:11435`，直接当普通 OpenAI 兼容接口用就行（GPU 模式下后端 llama-server 监听 11436）。
-
-### 4. 看统计
-
-```bash
-moe-l2 stats
-# → 命中率: 85% · 槽位: 320/960 · 当前领域: codegen
-```
-
----
 
 ## CLI 参考
 
@@ -233,15 +243,6 @@ moe-l2 stats
 
 ---
 
-## 工作原理（简版）
-
-1. 你的 prompt 到达 moe-l2 代理
-2. 领域预测器分类（代码生成 → 数学 → 中文技术 ……）
-3. 专家权重 lazy mmap 驻留 CPU RAM（**零显存**），首次激活即 pinned（on-demand pin）——不再整体塞进 GPU
-4. GPU 经 PCIe DMA 直读激活专家（cuBLAS），热专家驻留 VRAM（A3 LRU 2048 槽），冷页 v3.1 淘汰
-5. 可选 sched-cache（`GGML_CUDA_EXPERT_CACHE=0.25`）：命中热专家走 D2D 免 PCIe，DS 类模型 Prompt +211%
-
----
 
 ## 平台要求
 
@@ -251,6 +252,7 @@ moe-l2 stats
 - `--gpu` 模式需要 NVIDIA 显卡（CUDA 后端）
 
 ---
+
 
 ## 更多数据
 
@@ -265,6 +267,7 @@ moe-l2 stats
 速度取舍是可预期的：专家驻留 CPU RAM（mmap 惰性 + on-demand pin，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-10 bins-v0.4.0 selective pin 主路径：DS-V2-Lite 生成 **145.63 t/s**（+284%）、Qwen3.6-A3B **74.99 t/s**（+49%，超 pre-lazy 46.5）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%，08-02 口径）。
 
 ---
+
 
 ## 相关工作
 
@@ -288,6 +291,7 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 
 ---
 
+
 ## 测试
 
 每次 push 自动跑 CI（GitHub Actions，Python 3.10–3.13）：ruff 静态检查 + pytest 覆盖率（低于 50% 判失败）+ 打包验证。状态徽章：[![CI](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml/badge.svg)](https://github.com/yalun753/moe-l2/actions/workflows/ci.yml)
@@ -303,6 +307,7 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 
 > C++ 侧（llama.cpp on-demand-pin / expert-cache 补丁）依赖 GPU，由 `references/` 下的端到端实测报告验证——见 [models-benchmark.md](references/models-benchmark.md)。
 
+
 ## 项目状态
 
 - ✅ 领域预测器（关键词 + 可选语义）
@@ -315,6 +320,7 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 - ✅ PyPI 包（`moe-l2`）
 
 ---
+
 
 ## 许可证
 
