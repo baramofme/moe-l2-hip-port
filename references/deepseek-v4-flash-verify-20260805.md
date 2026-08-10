@@ -1,4 +1,6 @@
-# DeepSeek V4 Flash 验证报告（更新至 2026-08-07）
+# DeepSeek V4 Flash 验证报告（更新至 2026-08-10）
+
+> ⚠️ **2026-08-10 基准更正**：本报告 10.1 t/s 为**官方原版 llama.cpp 二进制**实测（on-demand pin 路径）；moe-l2 优化版二进制（selective pin，bins-v0.4.0）在 RTX 4090 上实测 **30.9 t/s**、RSS **84.4 → 10.4GB（↓88%）**。本报告下方 08-05/08-07 数据保留作历史记录。
 
 > 状态：**on-demand pin 主路径跑通 V4 Flash ✅（RTX 4090 实测 10.1 t/s，原 1.7-2.0 的 5 倍）**；2080 Ti + RTX 3080 双卡 v3.1 全链路亦已验证（0.89-2.22 t/s，卡算力极限）
 > 关联：`multi-arch-three-gpu-benchmark.md`（V4 全链路复测节）、PyPI 0.7.1 / bins-v0.3.1（on-demand pin 主路径）

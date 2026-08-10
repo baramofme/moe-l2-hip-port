@@ -25,7 +25,7 @@ moe-l2 是一个面向消费级 NVIDIA 显卡的 MoE（混合专家）模型推�
 
 > **长上下文补充实测（2026-08-09，v5 默认 whole-pin，RTX 4090，-c 8192，3200 tokens 长生成）**：Qwen3.6-A3B **45.1 t/s @ 2.4 GB（2477 MiB）**、DS-V2-Lite **34.1 t/s @ 3.4 GB（3441 MiB）**——8K 上下文 + 长文生成更贴近真实使用；短上下文短生成可达上表 50.2 / 37.9 t/s。原始采样数据与生成全文见演示素材包（rec_data.csv / rec_full.txt）。
 
-> **多架构全兼容（2026-08-04，bins-v0.2.1）**：一个二进制支持所有 NVIDIA 消费卡（GTX 1080 sm_61 → RTX 50 系 sm_120a，CUDA 12.8 编译）。三卡实测（DS-V2-Lite）：RTX 2080 Ti 6.89 t/s、RTX 3080 Ti 12.25 t/s（比旧 CUDA 11.8 单架构快 55%）、RTX 5090 16.63 t/s。完整报告见 [multi-arch-three-gpu-benchmark.md](multi-arch-three-gpu-benchmark.md)。v0.2.1 修复打包问题（bin/ 嵌套前缀、缺 libnccl.so.2）。
+> **多架构全兼容（2026-08-10，bins-v0.4.0）**：一个二进制支持所有 NVIDIA 消费卡（GTX 1080 sm_61 → RTX 50 系 sm_120a，CUDA 12.8 编译）。2080 Ti 全链路实测（bins-v0.4.0 + selective pin）：DS-V2-Lite **87.25 t/s**、Qwen3.6-A3B **47.24 t/s**（2026-08-10，moe-l2 优化版多架构二进制；此前 6.89/11.15 为官方原版二进制数据）。完整报告见 [multi-arch-three-gpu-benchmark.md](multi-arch-three-gpu-benchmark.md)。v0.4.0 含 selective pin + GPU cache 预填充 + flywheel 路由表。
 
 技术本质一句话：**MoE 模型每步推理只激活少量专家（top-2~8 / 数百个），全量驻留显存是浪费。moe-l2 把专家放在 CPU 内存（零显存），GPU 每步只取激活专家计算，热专家用缓存留在 GPU 免 PCIe 往返。**
 

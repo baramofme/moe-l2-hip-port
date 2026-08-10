@@ -14,7 +14,7 @@ Format: Keep a Changelog 1.1 style — Added / Changed / Fixed.
 - **Flywheel router-map auto-learning** — `moe_l2/domain_router_flywheel.py` aggregates real inference routing (EXPERT log lines), rebuilds the router map at thresholds (5000 records), new domains added automatically; `load_mapping()` prefers the flywheel table, falls back to the static table.
 - **`--router-map` CLI option** + `MOE_L2_ROUTER_FILE` env var; V4 43-layer top-100 map bundled (`moe_l2/data/domain_router_map_v4.json`, `domain_router_map_v4_topics.json`, Qwen `domain_router_map_qwen.json`).
 - bins-v0.4.0 multi-arch binaries (sm_61/75/86/89/120a, CUDA 12.8, no NCCL) — includes selective pin + prefill.
-- **Corrected V4 baseline**: 30.9 t/s (the earlier 10.1 t/s was the **vanilla llama.cpp binary**; the moe-l2 optimized build was always ~30 t/s). 2080 Ti full-chain (moe-l2 start --gpu): Qwen **52.07** / DS-V2-Lite **94.95** t/s (+145~730% vs vanilla).
+- **Corrected V4 baseline**: 30.9 t/s (the earlier 10.1 t/s was the **vanilla llama.cpp binary**; the moe-l2 optimized build was always ~30 t/s). 2080 Ti full-chain re-measured (2026-08-10): Qwen **47.24** / DS-V2-Lite **87.25** t/s (+200~700% vs vanilla).
 
 ### Changed
 - Default behavior unchanged (whole-pin); selective pin is opt-in via router file.

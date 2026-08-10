@@ -223,6 +223,8 @@
 | round2 | 16.88 t/s | **50.80 t/s** | +201% |
 | round3 | 15.86 t/s | **52.07 t/s** | +228% |
 
+> 📌 **2026-08-10 晚复测**（同机同二进制，round3 稳定轮）：Qwen **47.24 t/s**、DS **87.25 t/s**（见 qwen3.6-a3b-iq2m-benchmark.md / deepseek-v2-lite-q2k-benchmark.md 08-10 章节）。上表为首次全链路验证数据，两次均真实实测，波动属正常；README/models-benchmark 采用复测值。
+
 ### DS-V2-Lite（Q2_K，codegen 128 tokens）
 
 | 轮次 | 旧基线（原版二进制）| 新多架构全链路 | 提升 |
