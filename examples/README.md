@@ -35,27 +35,26 @@ vim examples/demo_a3_compression.sh
 bash examples/demo_a3_compression.sh
 ```
 
-### 输出示例（RTX 4090 / DS-V2-Lite Q2_K，2026-08-02 实测）
+### 输出示例（RTX 4090 / DS-V2-Lite Q2_K，2026-08-10 实测，bins-v0.4.0 selective pin）
 
 ```
 ==============================================
   RESULTS SUMMARY
 ==============================================
 
-                        OG (full GPU)     moe-l2         moe-l2+cache
-  ────────────  ────────────────────  ────────────────────  ────────────────────
-  VRAM used                6635 MB             1625 MB              1625 MB
-  Speed                    65 t/s             37.9 t/s             50.2 t/s
-  Savings                          -       5010 MB (4.08x)                -
+                        OG (full GPU)     moe-l2 (selective pin)
+  ────────────  ────────────────────  ────────────────────
+  VRAM used                23300 MB             4900 MB
+  Speed                    65 t/s             145.63 t/s
+  Savings                          -       18400 MB (4.75x)
 ```
 
-Prompt 处理：OG 110 t/s、host-buffer 99 t/s、cache 模式 **308 t/s（+211%）**。
+Prompt 处理：OG 110 t/s、moe-l2 selective pin 下 DS 生成 **145.63 t/s**（反超全 GPU 224%）。
 
 ### 结果怎么看
 
-- **VRAM used**：模型加载后占用的 GPU 显存（减去空闲值）。OG 模式把 ~6.6 GB 的 DS-V2-Lite Q2_K 全量加载，host-buffer 模式只有 ~1.6 GB（专家不占显存）。
-- **Speed**：host-buffer 模式因为专家从 CPU pinned 内存经 PCIe 拷入（只拷激活专家），约为全显存的 58%。单用户聊天场景完全流畅（37.5 t/s ≈ 每秒 75 个汉字）。
-- **cache 模式**：对 DS 这类中专家高重复率模型，sched-cache 让 prompt 处理 +211%（99 → 308 t/s），生成 +5%（37.5 → 39.2 t/s），VRAM 零增加。
+- **VRAM used**：模型加载后占用的 GPU 显存（减去空闲值）。OG 模式把 ~23.3 GB 的 DS-V2-Lite 全量加载，moe-l2 selective pin 模式只有 ~4.9 GB（专家驻 CPU RAM，只 pin 热专家）。
+- **Speed**：moe-l2 selective pin 下专家从 CPU pinned 内存经 PCIe 拷入（只拷激活专家），DS 生成 **145.63 t/s**（反超全 GPU 224%）。单用户聊天场景远超流畅门槛。
 
 ### 显存监控原理
 
@@ -68,7 +67,7 @@ Prompt 处理：OG 110 t/s、host-buffer 99 t/s、cache 模式 **308 t/s（+211%
 - **Qwen3.6-A3B 不需要开 cache**（专家太小，无收益只加 VRAM）；Mixtral-8x7B 也不需要（top-2 命中率低）。cache 只对 DS 这类中专家（~1.5MB）高重复率模型有用。
 - 模型换成 Qwen3.6-A3B IQ2_M（~3 GB）在 8 GB 显卡上也能跑。
 
-### 三模型推荐配置（2026-08-02 实测）
+### 三模型推荐配置（2026-08-10 实测）
 
 | 模型 | 推荐 | 理由 |
 |------|------|------|
