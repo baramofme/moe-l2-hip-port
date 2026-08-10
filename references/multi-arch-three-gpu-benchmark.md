@@ -1,4 +1,19 @@
-# 多架构三卡验证报告（bins-v0.2.0）— 2026-08-03
+# 多架构三卡验证报告（bins-v0.2.0）— 2026-08-03（2026-08-10 复测更新）
+
+## 2026-08-10 复测：2080 Ti 全链路（bins-v0.4.0 / selective pin）
+
+> 用 bins-v0.4.0 多架构二进制 + 全链路（`moe-l2 start --gpu`，selective pin 路由表 top-100）在 RTX 2080 Ti（region-42 云机）复测双模型。**2080 Ti 行数据全面刷新**（原版 llama.cpp 二进制 → moe-l2 优化版多架构二进制）：
+
+| 模型 | 旧（08-03，原版二进制） | 新（08-10，全链路 selective pin） | 提升 |
+|------|------------------------|-----------------------------------|------|
+| DS-V2-Lite（Q2_K） | 6.89 t/s | **87.25 t/s**（追问1，round3） | +1166% |
+| Qwen3.6-35B-A3B（UD-IQ2_M） | 11.15 t/s | **47.24 t/s**（追问1，round3） | +324% |
+
+- 完整 4 轮数据见 [qwen3.6-a3b-iq2m-benchmark.md](qwen3.6-a3b-iq2m-benchmark.md) / [deepseek-v2-lite-q2k-benchmark.md](deepseek-v2-lite-q2k-benchmark.md)（2026-08-10 章节）
+- 结论：之前 2080 Ti 的 6.89/11.15 是**官方原版 llama.cpp 二进制**（sm_75 单架构、无 moe-l2 优化）数据；moe-l2 优化版多架构二进制在 2080 Ti 上释放真实性能，DS +1166%、Qwen +324%
+- 本报告下方 08-03 数据保留作历史基线（bins-v0.2.0 / host-buffer 主路径 / 原版二进制）
+
+---
 
 ## 基本信息
 
