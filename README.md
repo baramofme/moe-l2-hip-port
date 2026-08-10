@@ -328,7 +328,7 @@ Automated CI runs on every push (GitHub Actions, Python 3.10–3.13): `ruff` lin
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
 - ✅ **Selective pin + GPU prefill (2026-08-10, v0.4.0, current main path)**: router-map-driven top-K pin → V4 RSS **84.4 → 26.8 GB** at **34.67 t/s** (on-demand fallback 17.5 GB / 35.96 t/s); DS **145.63** / Qwen **74.99** t/s on 4090; GPU cache prefill lifts cold-start round1 10.7 → 19.7 t/s (+84%). (Prior milestones: host-buffer fast path 08-02 → on-demand pin 08-07 → selective pin 08-10.)
 - ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090 (2026-08-02, sched-cache): cache benefit = expert size × hit rate — DS-V2-Lite (1.55 MB, top-6) gets Prompt +211% / Gen +5% at cache=0.25; Qwen (~1 MB) and Mixtral (252 MB, top-2) get no gain. Recommended: cache=0.25 for DS-class, off otherwise.
-- ✅ **DeepSeek-V4-Flash (157B MoE) verified (2026-08-05)**: 85 GB 3-shard GGUF runs on 2080 Ti (11 GB) and RTX 3080 (10 GB) — VRAM 8.3-9.1 GB, RSS capped by expert-page eviction v3.1 (fixed-expert-count LRU, `MOE_L2_LRU_MAX_EXPERTS`), multi-shard GGUF parsing fix shipped. Speed 0.89-2.22 t/s (GPU compute bound). [Full report](references/deepseek-v4-flash-verify-20260805.md)
+- ✅ **DeepSeek-V4-Flash (157B MoE) verified (2026-08-05)**: 85 GB 3-shard GGUF runs on 2080 Ti (11 GB) — VRAM 8.3-9.1 GB, RSS capped by expert-page eviction v3.1 (fixed-expert-count LRU, `MOE_L2_LRU_MAX_EXPERTS`), multi-shard GGUF parsing fix shipped. [Full report](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI package (`moe-l2`)
 
 ---
