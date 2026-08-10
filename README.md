@@ -20,6 +20,21 @@
 
 Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.9 GB VRAM (on-demand pin experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — with selective pin (v4_top100.map), RSS **26.8 GB** (from 84.4 GB whole-pin, −68%) at **34.67 t/s**; on-demand fallback RSS 17.5 GB at **35.96 t/s** (VRAM 16.5-16.7 GB, measured 2026-08-10). Full report: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **All measured models: [models-benchmark.md](references/models-benchmark.md)**
 
+
+### Visual demo (RTX 4090, 2026-08-10)
+
+| Qwen3.6-35B-A3B (32B MoE) — standard vs moe-l2 | DeepSeek-V2-Lite (16B MoE) — 8 GB card vs 24 GB card |
+|---|---|
+| ![Qwen VRAM comparison](examples/demo-assets/fig1-qwen-vram.png) | ![DS VRAM comparison](examples/demo-assets/fig2-ds-vram.png) |
+
+Summary: **79% less VRAM · 3.9× model-per-GB ratio** — an 8 GB card runs what used to need 24 GB (RTX 4090 measured 2026-08-10, bins-v0.4.0 selective pin: DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB):
+
+![moe-l2 summary](examples/demo-assets/fig3-summary.png)
+
+Live capture: Qwen3.6-35B-A3B generating **3,200 tokens with VRAM pinned at ~2.4 GB** (41.6 t/s) — watch the VRAM curve stay flat below the 8 GB line the whole run:
+
+[`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4) (45 s, 1280×720) · raw telemetry: [`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · full generated text: [`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
+
 ### Benchmarked on RTX 4090 (2026-08-10, selective pin main path)
 
 | Mode | GPU VRAM | Gen speed | What it means |
@@ -101,20 +116,6 @@ user → moe-l2 proxy (localhost:11435)
     └── forward to llama-server (localhost:11436, CUDA GPU)
         └── GPU reads pinned experts via PCIe DMA; cold pages evicted
 ```
-
-### Visual demo (RTX 4090, 2026-08-10)
-
-| Qwen3.6-35B-A3B (32B MoE) — standard vs moe-l2 | DeepSeek-V2-Lite (16B MoE) — 8 GB card vs 24 GB card |
-|---|---|
-| ![Qwen VRAM comparison](examples/demo-assets/fig1-qwen-vram.png) | ![DS VRAM comparison](examples/demo-assets/fig2-ds-vram.png) |
-
-Summary: **79% less VRAM · 3.9× model-per-GB ratio** — an 8 GB card runs what used to need 24 GB (RTX 4090 measured 2026-08-10, bins-v0.4.0 selective pin: DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB):
-
-![moe-l2 summary](examples/demo-assets/fig3-summary.png)
-
-Live capture: Qwen3.6-35B-A3B generating **3,200 tokens with VRAM pinned at ~2.4 GB** (41.6 t/s) — watch the VRAM curve stay flat below the 8 GB line the whole run:
-
-[`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4) (45 s, 1280×720) · raw telemetry: [`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · full generated text: [`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
 
 ## Usage
 

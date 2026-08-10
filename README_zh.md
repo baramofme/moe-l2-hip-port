@@ -47,6 +47,24 @@ moe-l2 model download --model <name> # 下载模型（断点续传，走 hf-mirr
 
 连接 `localhost:11435`，现有工具（curl、Open WebUI、LangChain）无需改配置。
 
+
+### 可视化演示（RTX 4090，2026-08-10）
+
+| Qwen3.6-35B-A3B（32B MoE）— 标准 vs moe-l2 | DeepSeek-V2-Lite（16B MoE）— 8GB 卡 vs 24GB 卡 |
+|---|---|
+| ![Qwen 显存对比](examples/demo-assets/fig1-qwen-vram.png) | ![DS 显存对比](examples/demo-assets/fig2-ds-vram.png) |
+
+一句话总结：**显存省 79% · 速度反超全 GPU 224% · 模型/显存比 3.9×** —— 8 GB 卡跑出原本 24 GB 卡的效果（RTX 4090 实测 2026-08-10，bins-v0.4.0 selective pin：DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB）：
+
+![moe-l2 汇总](examples/demo-assets/fig3-summary.png)
+
+实机录屏：Qwen3.6-35B-A3B 生成 **3200 tokens，全程显存钉在 ~2.4 GB**（41.6 t/s）—— 曲线全程平直，远低于 8 GB 红线：
+
+[`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4)（45 秒，1280×720）· 原始采样：[`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · 生成全文：[`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
+
+---
+
+
 ### Benchmarked on RTX 4090（2026-08-10，selective pin 主路径）
 
 基于 **RTX 4090** 实测（2026-08-10，selective pin 主路径：路由表驱动 top-K pin + GPU cache 预填充，bins-v0.4.0）：
@@ -137,23 +155,6 @@ moe-l2 stats
 3. 专家权重 lazy mmap 驻留 CPU RAM（**零显存**），首次激活即 pinned（on-demand pin）——不再整体塞进 GPU
 4. GPU 经 PCIe DMA 直读激活专家（cuBLAS），热专家驻留 VRAM（A3 LRU 2048 槽），冷页 v3.1 淘汰
 5. 可选 sched-cache（`GGML_CUDA_EXPERT_CACHE=0.25`）：命中热专家走 D2D 免 PCIe，DS 类模型 Prompt +211%
-
----
-
-
-### 可视化演示（RTX 4090，2026-08-10）
-
-| Qwen3.6-35B-A3B（32B MoE）— 标准 vs moe-l2 | DeepSeek-V2-Lite（16B MoE）— 8GB 卡 vs 24GB 卡 |
-|---|---|
-| ![Qwen 显存对比](examples/demo-assets/fig1-qwen-vram.png) | ![DS 显存对比](examples/demo-assets/fig2-ds-vram.png) |
-
-一句话总结：**显存省 79% · 速度反超全 GPU 224% · 模型/显存比 3.9×** —— 8 GB 卡跑出原本 24 GB 卡的效果（RTX 4090 实测 2026-08-10，bins-v0.4.0 selective pin：DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB）：
-
-![moe-l2 汇总](examples/demo-assets/fig3-summary.png)
-
-实机录屏：Qwen3.6-35B-A3B 生成 **3200 tokens，全程显存钉在 ~2.4 GB**（41.6 t/s）—— 曲线全程平直，远低于 8 GB 红线：
-
-[`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4)（45 秒，1280×720）· 原始采样：[`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · 生成全文：[`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
 
 ---
 
