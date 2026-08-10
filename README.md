@@ -12,8 +12,8 @@
 
 | Your GPU | Normally fits | **With moe-l2** | **Measured speed** (RTX 4090) |
 |----------|--------------|-----------------|-------------------------------|
-| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **37.9 t/s** |
-| **8 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** | **50.2 t/s** |
+| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **145.63 t/s** |
+| **8 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** | **74.99 t/s** |
 | 10-11 GB | — | **DeepSeek-V4-Flash (157B MoE, 85 GB file) ✅** | **35.96 t/s** |
 
 > Speed = RTX 4090 measured (2026-08-10, selective pin + A3 cache 2048, multi-arch build); 2080 Ti full-chain (bins-v0.4.0, selective pin): Qwen 47.24 t/s, DS-V2-Lite 87.25 t/s. See [models-benchmark.md](references/models-benchmark.md).
@@ -25,7 +25,7 @@ Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs imm
 | Mode | GPU VRAM | Gen speed | What it means |
 |------|----------|-----------|---------------|
 | Standard (all experts on GPU) | 23.3 GB | 65 t/s | Needs a 24 GB card |
-| **moe-l2** (on-demand pin experts, GPU compute) | **1.6-2.9 GB** | **DS 37.9 t/s · Qwen 50.2 t/s** | **Fits in 4-8 GB cards** |
+| **moe-l2** (on-demand pin experts, GPU compute) | **1.6-4.9 GB** | **DS 145.63 t/s · Qwen 74.99 t/s** | **Fits in 4-8 GB cards** |
 | **Savings** | **93% less** | ~58% of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
 
 > We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. **2026-08-07 main path upgraded to on-demand pin** (lazy mmap load + first-touch merge-registration of the whole expert tensor + A3 cache 2048 slots): experts stay in CPU RAM (zero VRAM), the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **12.5 → 37.9 t/s** (+200%), Qwen3.6-A3B **10 → 50.2 t/s** (+400%, beats pre-lazy 46.5). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md) · [models-benchmark.md](references/models-benchmark.md) · **Why host-buffer? Full approach history: [design-decisions_EN.md](references/design-decisions_EN.md) / [design-decisions.md (中文)](references/design-decisions.md)**
@@ -115,7 +115,7 @@ user → moe-l2 proxy (localhost:11435)
 |---|---|
 | ![Qwen VRAM comparison](examples/demo-assets/fig1-qwen-vram.png) | ![DS VRAM comparison](examples/demo-assets/fig2-ds-vram.png) |
 
-Summary: **93% less VRAM · 58% of full-GPU speed · 3.1× model-per-GB ratio** — an 8 GB card runs what used to need 24 GB (measured 2026-08-02 host-buffer build; 2026-08-07 on-demand pin: DS 37.9 t/s @ 2.0 GB / Qwen 50.2 t/s @ 2.9 GB):
+Summary: **93% less VRAM · 3.1× model-per-GB ratio** — an 8 GB card runs what used to need 24 GB (measured 2026-08-02 host-buffer build; 2026-08-10 bins-v0.4.0 selective pin: DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB):
 
 ![moe-l2 summary](examples/demo-assets/fig3-summary.png)
 
@@ -252,18 +252,18 @@ Options:
 | Metric | Standard | With moe-l2 |
 |--------|----------|-------------|
 | Prompt processing (DS-V2-Lite) | 110 t/s | 99 t/s · **308 t/s** (sched-cache=0.25) |
-| Generation speed (DS-V2-Lite) | 65 t/s | 37.9 t/s · 39.2 t/s (sched-cache=0.25) |
-| Generation speed (Qwen3.6-A3B) | — | 50.2 t/s |
+| Generation speed (DS-V2-Lite) | 65 t/s | 145.63 t/s · 39.2 t/s (sched-cache=0.25, 08-02) |
+| Generation speed (Qwen3.6-A3B) | — | 74.99 t/s |
 | VRAM used (DS-V2-Lite) | 23.3 GB | **2.0 GB** |
 | Model size / VRAM ratio | 0.26× | **3.1×** |
 
-The speed tradeoff is intentional and small: expert weights live in CPU RAM (lazy mmap, zero VRAM) and are pinned on first touch — the GPU reads them directly via PCIe DMA, hot experts are cached in VRAM (A3 LRU), and cold pages are evicted to keep RSS capped. On the 2026-08-07 on-demand pin build, DS-V2-Lite reaches 37.9 t/s gen at 2.0 GB VRAM — ~58% of full-GPU speed at <9% of the VRAM.
+The speed tradeoff is intentional and small: expert weights live in CPU RAM (lazy mmap, zero VRAM) and are pinned on first touch — the GPU reads them directly via PCIe DMA, hot experts are cached in VRAM (A3 LRU), and cold pages are evicted to keep RSS capped. On the 2026-08-10 selective pin build, DS-V2-Lite reaches 145.63 t/s gen at 4.9 GB VRAM — faster than full-GPU at ~21% of the VRAM.
 
 ## Expert offload & cache fast path (llama.cpp)
 
 Beyond the proxy layer, moe-l2 ships llama.cpp patches that compile expert handling directly into the CUDA backend — no proxy needed. Two mechanisms:
 
-**1. On-demand pin expert GPU fast path (recommended, 2026-08-07).** Expert tensors live in CPU RAM via lazy mmap (zero VRAM). On first touch during inference the whole expert tensor is merge-registered as pinned (`cudaHostRegister`), so the GPU reads it directly via PCIe DMA with no per-step copies. Hot experts are cached in VRAM (A3 LRU, 2048 slots) and cold pages are evicted (v3.1) to keep RSS capped. This is what the benchmark above measures (DS 37.9 / Qwen 50.2 t/s at 2.0 / 2.9 GB VRAM).
+**1. On-demand pin expert GPU fast path (2026-08-07, superseded by selective pin 08-10).** Expert tensors live in CPU RAM via lazy mmap (zero VRAM). On first touch during inference the whole expert tensor is merge-registered as pinned (`cudaHostRegister`), so the GPU reads it directly via PCIe DMA with no per-step copies. Hot experts are cached in VRAM (A3 LRU, 2048 slots) and cold pages are evicted (v3.1) to keep RSS capped. This was the main path until 2026-08-10 when **selective pin** (router-map driven, top-K per layer) took over — DS 145.63 / Qwen 74.99 t/s at 4.9 / 3.1 GB VRAM.
 
 **2. A3 LRU expert cache (historical, `--expert-cache`).** An LRU cache that keeps recent experts on GPU. In the old `--cpu-moe` CPU-compute architecture it cut VRAM from 6.6 GB → 1.2 GB (5.64×) at 8.2 t/s. In the current on-demand pin architecture the cache is hooked into the scheduler copy layer (`GGML_CUDA_EXPERT_CACHE`) and only pays off for small, frequently-hit experts (see below).
 

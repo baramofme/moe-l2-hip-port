@@ -12,8 +12,8 @@
 
 | 你的显卡 | 正常能跑 | **用了 moe-l2** | **实测速度**（RTX 4090） |
 |----------|---------|-----------------|----------------------|
-| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **37.9 t/s** |
-| **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** | **50.2 t/s** |
+| 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **145.63 t/s** |
+| **8 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** | **74.99 t/s** |
 | 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85 GB 文件）✅** | **35.96 t/s** |
 
 > 速度 = RTX 4090 实测（2026-08-10，selective pin + A3 cache 2048，多架构包）；2080 Ti 全链路（bins-v0.4.0，selective pin）：Qwen 47.24 t/s、DS-V2-Lite 87.25 t/s。详见 [models-benchmark.md](references/models-benchmark.md)。
@@ -62,8 +62,8 @@ MoE 模型有几十上百个"专家"，但每步推理只激活其中几个。�
 | 模式 | GPU 显存 | 速度 | 意味着什么 |
 |------|----------|------|-----------|
 | 标准（全 expert 在 GPU） | 23.3 GB | 65 t/s | 需要 24 GB 显卡 |
-| **moe-l2**（on-demand pin 专家，GPU 计算） | **1.6-2.9 GB** | **DS 37.9 t/s · Qwen 50.2 t/s** | **4 GB 卡也能跑** |
-| **节省** | **93% 显存** | 全 GPU 速度的 ~58% | 腾出 ~20 GB 做别的 |
+| **moe-l2**（on-demand pin 专家，GPU 计算） | **1.6-4.9 GB** | **DS 145.63 t/s · Qwen 74.99 t/s** | **4 GB 卡也能跑** |
+| **节省** | **79% 显存** | 反超全 GPU（224%） | 腾出 ~20 GB 做别的 |
 
 不开 moe-l2，8 GB 显卡**根本无法加载这个模型**——直接 OOM。开了之后 32B MoE 只占 ~2.9 GB（on-demand pin 专家，GPU 计算），还剩 5 GB 干别的。
 
@@ -109,7 +109,7 @@ llama-server -m model.gguf -ngl 99 -c 2048 --no-webui
 |---|---|
 | ![Qwen 显存对比](examples/demo-assets/fig1-qwen-vram.png) | ![DS 显存对比](examples/demo-assets/fig2-ds-vram.png) |
 
-一句话总结：**显存省 93% · 速度保留 58% · 模型/显存比 3.1×** —— 8 GB 卡跑出原本 24 GB 卡的效果（图为 2026-08-02 host-buffer 构建实测；2026-08-07 on-demand pin 最新：DS 37.9 t/s @ 2.0 GB / Qwen 50.2 t/s @ 2.9 GB）：
+一句话总结：**显存省 79% · 速度反超全 GPU 224% · 模型/显存比 3.1×** —— 8 GB 卡跑出原本 24 GB 卡的效果（图为 2026-08-02 host-buffer 构建实测；2026-08-10 bins-v0.4.0 selective pin 最新：DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB）：
 
 ![moe-l2 汇总](examples/demo-assets/fig3-summary.png)
 
@@ -264,12 +264,12 @@ moe-l2 stats
 | 指标 | 标准 | moe-l2 |
 |------|------|--------|
 | Prompt 处理（DS-V2-Lite） | 110 t/s | 99 t/s · **308 t/s**（sched-cache=0.25） |
-| 生成速度（DS-V2-Lite） | 65 t/s | 37.9 t/s · 39.2 t/s（sched-cache=0.25） |
-| 生成速度（Qwen3.6-A3B） | — | 50.2 t/s |
+| 生成速度（DS-V2-Lite） | 65 t/s | 145.63 t/s · 39.2 t/s（sched-cache=0.25，08-02） |
+| 生成速度（Qwen3.6-A3B） | — | 74.99 t/s |
 | 显存占用 | 23.3 GB | **2.0 GB** |
 | 模型大小 / 显存比 | 0.26× | **3.1×** |
 
-速度取舍是可预期的：专家驻留 CPU RAM（mmap 惰性 + on-demand pin，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-07 on-demand pin 主路径：DS-V2-Lite 生成 37.9 t/s（+200%）、Qwen3.6-A3B 50.2 t/s（+400%，超 pre-lazy 46.5）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%）。
+速度取舍是可预期的：专家驻留 CPU RAM（mmap 惰性 + on-demand pin，零显存），调度器每步只把激活的专家拷到 GPU。2026-08-10 bins-v0.4.0 selective pin 主路径：DS-V2-Lite 生成 **145.63 t/s**（+284%）、Qwen3.6-A3B **74.99 t/s**（+49%，超 pre-lazy 46.5）；DS 开 sched-cache=0.25 后 prompt 处理 308 t/s（+211%，08-02 口径）。
 
 ---
 
