@@ -20,15 +20,15 @@
 
 Without moe-l2, an 8 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~2.9 GB VRAM (on-demand pin experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — with selective pin (v4_top100.map), RSS **26.8 GB** (from 84.4 GB whole-pin, −68%) at **34.67 t/s**; on-demand fallback RSS 17.5 GB at **35.96 t/s** (VRAM 16.5-16.7 GB, measured 2026-08-10). Full report: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md) · **All measured models: [models-benchmark.md](references/models-benchmark.md)**
 
-### Benchmarked on RTX 4090 (2026-08-07, on-demand pin main path)
+### Benchmarked on RTX 4090 (2026-08-10, selective pin main path)
 
 | Mode | GPU VRAM | Gen speed | What it means |
 |------|----------|-----------|---------------|
 | Standard (all experts on GPU) | 23.3 GB | 65 t/s | Needs a 24 GB card |
-| **moe-l2** (on-demand pin experts, GPU compute) | **1.6-4.9 GB** | **DS 145.63 t/s · Qwen 74.99 t/s** | **Fits in 4-8 GB cards** |
-| **Savings** | **93% less** | ~58% of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
+| **moe-l2** (selective pin experts, GPU compute) | **1.6-4.9 GB** | **DS 145.63 t/s · Qwen 74.99 t/s** | **Fits in 4-8 GB cards** |
+| **Savings** | **79% less** | 224% of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
 
-> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090. **2026-08-07 main path upgraded to on-demand pin** (lazy mmap load + first-touch merge-registration of the whole expert tensor + A3 cache 2048 slots): experts stay in CPU RAM (zero VRAM), the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **12.5 → 37.9 t/s** (+200%), Qwen3.6-A3B **10 → 50.2 t/s** (+400%, beats pre-lazy 46.5). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [cache-sched-layer-benchmark.md](references/cache-sched-layer-benchmark.md) · [models-benchmark.md](references/models-benchmark.md) · **Why host-buffer? Full approach history: [design-decisions_EN.md](references/design-decisions_EN.md) / [design-decisions.md (中文)](references/design-decisions.md)**
+> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with **selective pin** (router-map driven top-K, bins-v0.4.0, 2026-08-10): experts stay in CPU RAM (zero VRAM), the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **145.63 t/s** (4.9 GB VRAM, 2.1 GB RSS), Qwen3.6-A3B **74.99 t/s** (3.1 GB VRAM, 2.3 GB RSS). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark.md](references/models-benchmark.md)
 
 ### Low-memory mode: dynamic pin set (2026-08-09)
 
@@ -109,13 +109,13 @@ user → moe-l2 proxy (localhost:11435)
         └── GPU reads pinned experts via PCIe DMA; cold pages evicted
 ```
 
-### Visual demo (RTX 4090, 2026-08-02)
+### Visual demo (RTX 4090, 2026-08-10)
 
 | Qwen3.6-35B-A3B (32B MoE) — standard vs moe-l2 | DeepSeek-V2-Lite (16B MoE) — 8 GB card vs 24 GB card |
 |---|---|
 | ![Qwen VRAM comparison](examples/demo-assets/fig1-qwen-vram.png) | ![DS VRAM comparison](examples/demo-assets/fig2-ds-vram.png) |
 
-Summary: **93% less VRAM · 3.1× model-per-GB ratio** — an 8 GB card runs what used to need 24 GB (measured 2026-08-02 host-buffer build; 2026-08-10 bins-v0.4.0 selective pin: DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB):
+Summary: **79% less VRAM · 3.9× model-per-GB ratio** — an 8 GB card runs what used to need 24 GB (RTX 4090 measured 2026-08-10, bins-v0.4.0 selective pin: DS 145.63 t/s @ 4.9 GB / Qwen 74.99 t/s @ 3.1 GB):
 
 ![moe-l2 summary](examples/demo-assets/fig3-summary.png)
 
@@ -263,7 +263,7 @@ The speed tradeoff is intentional and small: expert weights live in CPU RAM (laz
 
 Beyond the proxy layer, moe-l2 ships llama.cpp patches that compile expert handling directly into the CUDA backend — no proxy needed. Two mechanisms:
 
-**1. On-demand pin expert GPU fast path (2026-08-07, superseded by selective pin 08-10).** Expert tensors live in CPU RAM via lazy mmap (zero VRAM). On first touch during inference the whole expert tensor is merge-registered as pinned (`cudaHostRegister`), so the GPU reads it directly via PCIe DMA with no per-step copies. Hot experts are cached in VRAM (A3 LRU, 2048 slots) and cold pages are evicted (v3.1) to keep RSS capped. This was the main path until 2026-08-10 when **selective pin** (router-map driven, top-K per layer) took over — DS 145.63 / Qwen 74.99 t/s at 4.9 / 3.1 GB VRAM.
+**1. Selective pin expert GPU fast path (2026-08-10, current main path).** Expert tensors live in CPU RAM via lazy mmap (zero VRAM). A router map (top-K experts per layer) pre-pins the hot experts as host-pinned (`cudaHostRegister`), so the GPU reads them directly via PCIe DMA; experts outside the map fall back to on-demand pin. Hot experts are cached in VRAM (A3 LRU, 2048 slots) and cold pages are evicted (v3.1) to keep RSS capped. Measured: DS 145.63 / Qwen 74.99 / V4 34.67-35.96 t/s (4090).
 
 **2. A3 LRU expert cache (historical, `--expert-cache`).** An LRU cache that keeps recent experts on GPU. In the old `--cpu-moe` CPU-compute architecture it cut VRAM from 6.6 GB → 1.2 GB (5.64×) at 8.2 t/s. In the current on-demand pin architecture the cache is hooked into the scheduler copy layer (`GGML_CUDA_EXPERT_CACHE`) and only pays off for small, frequently-hit experts (see below).
 
@@ -326,9 +326,7 @@ Automated CI runs on every push (GitHub Actions, Python 3.10–3.13): `ruff` lin
 - ✅ L2 cache (mmap LRU, thread-safe, async preload)
 - ✅ Transparent proxy (HTTP/SSE forwarding)
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
-- ✅ Host-buffer expert GPU fast path (2026-08-02): DS-V2-Lite 12.5 → 37.5 t/s, Qwen3.6-A3B 10 → 46.8 t/s at 1.6 / 2.1 GB VRAM — experts in CPU pinned memory, only activated experts copied to GPU
-- ✅ **On-demand pin main path (2026-08-07)**: lazy mmap load + first-touch merge-registration of the whole expert tensor + A3 cache 2048 slots → Qwen **50.2** / DS **37.9** / V4 **10.1** t/s on 4090 (V4 5× faster than 1.7-2.0); fixes CUDA 11.8 cross-register-range copy crash
-- ✅ **Selective pin + GPU prefill (2026-08-10, v0.4.0)**: router-map-driven top-K pin → V4 RSS **84.4 → 26.8 GB** at **34.67 t/s** (on-demand fallback 17.5 GB / 35.96 t/s); GPU cache prefill lifts cold-start round1 10.7 → 19.7 t/s (+84%). Root-cause: the earlier 10.1 t/s V4 number was the **vanilla llama.cpp binary** — the moe-l2 optimized build was always ~30-35 t/s. 2080 Ti full-chain re-measured (2026-08-10): Qwen **47.24** / DS **87.25** t/s (+200~700% vs vanilla)
+- ✅ **Selective pin + GPU prefill (2026-08-10, v0.4.0, current main path)**: router-map-driven top-K pin → V4 RSS **84.4 → 26.8 GB** at **34.67 t/s** (on-demand fallback 17.5 GB / 35.96 t/s); DS **145.63** / Qwen **74.99** t/s on 4090; GPU cache prefill lifts cold-start round1 10.7 → 19.7 t/s (+84%). (Prior milestones: host-buffer fast path 08-02 → on-demand pin 08-07 → selective pin 08-10.)
 - ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090 (2026-08-02, sched-cache): cache benefit = expert size × hit rate — DS-V2-Lite (1.55 MB, top-6) gets Prompt +211% / Gen +5% at cache=0.25; Qwen (~1 MB) and Mixtral (252 MB, top-2) get no gain. Recommended: cache=0.25 for DS-class, off otherwise.
 - ✅ **DeepSeek-V4-Flash (157B MoE) verified (2026-08-05)**: 85 GB 3-shard GGUF runs on 2080 Ti (11 GB) and RTX 3080 (10 GB) — VRAM 8.3-9.1 GB, RSS capped by expert-page eviction v3.1 (fixed-expert-count LRU, `MOE_L2_LRU_MAX_EXPERTS`), multi-shard GGUF parsing fix shipped. Speed 0.89-2.22 t/s (GPU compute bound). [Full report](references/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI package (`moe-l2`)
