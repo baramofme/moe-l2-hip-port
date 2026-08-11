@@ -1,4 +1,4 @@
-# moe-l2 支持的模型实测汇总（2026-08-10 更新）
+# moe-l2 支持的模型实测汇总（2026-08-11 更新）
 
 > 全部为 moe-l2 完整链路（proxy + L2 cache + host-buffer GPU 直算 + selective pin/on-demand pin）实测数据，可复现。
 > **2026-08-10 主路径升级为 selective pin**（路由表驱动 top-K pin + GPU cache 预填充，bins-v0.4.0）；三卡复测（2080 Ti / 4090 / 5090）数据见各模型报告。
@@ -13,7 +13,7 @@
 | Qwen3.6-35B-A3B | 32B MoE | 11 GB | UD-IQ2_M | 256 (top-8) | **2.1-3.1 GB** | **2.3 GB** | **74.99 t/s** (4090) / 47.24 (2080 Ti) / 76.41 (5090) | RTX 4090 / 2080 Ti / 3080 Ti / 5090 |
 | DeepSeek-V4-Flash | **157B MoE** | **85 GB** (3 分片) | UD-IQ2_M | 256 (top-6) | **16.5-16.7 GB** | **17.5-26.8 GB**（on-demand/selective pin） | **35.96 t/s** (4090) | RTX 4090 |
 | Mixtral-8x7B | 47B MoE | ~16 GB | Q4_K_M | 8 (top-2) | 2.2-2.9 GB | — | 3.7 t/s* | RTX 4090（cache 测试口径） |
-| Qwen3-235B-A22B | 235B MoE | 81.7 GB | Q2_K | 256 (top-8) | 验证中 | — | TBD | — |
+| Qwen3-235B-A22B | 235B MoE | 85.7 GB | Q2_K | 128 (top-8) | **13.9 GB** | **54.7 GB**（selective pin） | **~3.9 t/s**（稳态，4090） | RTX 4090 |
 
 \* Mixtral 为裸 llama-server cache 收益测试口径（专家 CPU 计算，非 host-buffer GPU 直算主路径），仅作参考。
 \*\* 4090/5090/2080 Ti 数据为 **2026-08-10 selective pin/on-demand 主路径**（bins-v0.4.0，全链路 `moe-l2 start --gpu`）实测；3080 Ti 仍为 v3.1 多架构口径（bins-v0.3.0）。
@@ -58,6 +58,7 @@
 ## 详细报告
 
 - [DeepSeek-V4-Flash 验证报告（157B，双卡全链路）](deepseek-v4-flash-verify-20260805.md)
+- [Qwen3-235B-A22B Q2_K 基准（235B，4090 三轮实测）](qwen3-235b-a22b-q2k-benchmark.md)
 - [多架构三卡验证（2080 Ti / 3080 Ti / 5090）](multi-arch-three-gpu-benchmark.md)
 - [Qwen3.6-A3B IQ2_M 基准](qwen3.6-a3b-iq2m-benchmark.md)
 - [DeepSeek-V2-Lite Q2_K 基准](deepseek-v2-lite-q2k-benchmark.md)
