@@ -80,6 +80,18 @@ moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 
 > 2080 Ti（SM75）、3080 Ti（SM86）、5090（SM120a）已用多架构包实测；3080 Ti 比旧 CUDA 11.8 单架构版**快 55%**（12.25 vs 7.88 t/s）。2026-08-10 bins-v0.4.0 全链路复测：5090 DS **135.57** / Qwen **76.41** t/s（原版 llama.cpp 二进制仅 16.63/9.71——moe-l2 优化释放 Blackwell 真实性能）。完整报告：[multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md)
 
+### 并发请求 — 共享 cache，速度不掉（2026-08-12）
+
+4 路并发共享同一份 A3 专家 cache / selective pin 路由表——在 2080 Ti 和 4090 上用 **Qwen3.6-35B-A3B**、**DS-V2-Lite**、**DeepSeek-V4-Flash（256 专家、路由分散）** 验证：
+
+| 模型（GPU） | 单会话 | 4 路并发·同领域 | 4 路并发·跨领域 | vs 单会话 |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B（2080 Ti） | 38.4 t/s | **95.02** 总（23.76×4） | **88.28** 总（21.7-22.2×4） | 2.3-2.5× |
+| DS-V2-Lite（2080 Ti） | 78.3 t/s | **198.59** 总 | **188.25** 总 | 2.4-2.5× |
+| DeepSeek-V4-Flash（4090） | 35.4-35.8 t/s | **89.66** 总 | **88.10** 总 | 2.5× |
+
+并发总吞吐 = 单会话的 **2.3-2.5 倍**；跨领域 vs 同领域只差 **5-7%**——**无需按领域分 cache 池**。显存只随 slot 数线性增加（4 路 +2.9GB 全是 KV cache），内存几乎不动（+0.2GB）。**一台 AI PC 可以多人同时用。** 完整报告：[concurrent-cache-sharing-20260812.md](references/concurrent-cache-sharing-20260812.md)
+
 ## 快速开始
 
 ### 1. 安装

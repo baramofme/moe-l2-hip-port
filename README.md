@@ -75,6 +75,18 @@ One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-
 
 > Verified on 2080 Ti (SM75), 3080 Ti (SM86) and 5090 (SM120a) with the multi-arch build. The 3080 Ti run was **+55% faster** than the previous CUDA 11.8 single-arch build (12.25 vs 7.88 t/s). 2026-08-10 bins-v0.4.0 full-chain re-measurements: 5090 DS **135.57** / Qwen **76.41** t/s (vanilla llama.cpp binary was 16.63/9.71 — moe-l2 optimization unlocks Blackwell). Full report: [multi-arch-three-gpu-benchmark.md](references/multi-arch-three-gpu-benchmark.md) · **DeepSeek V4 Flash (157B) dual-GPU run: [deepseek-v4-flash-verify-20260805.md](references/deepseek-v4-flash-verify-20260805.md)**
 
+### Concurrent requests — shared cache, no speed loss (2026-08-12)
+
+4 parallel slots share one A3 expert cache / selective-pin table — verified on 2080 Ti and 4090 with **Qwen3.6-35B-A3B**, **DS-V2-Lite** and **DeepSeek-V4-Flash (256 experts, spread routing)**:
+
+| Model (GPU) | Single session | 4× concurrent, same domain | 4× concurrent, cross-domain | vs single |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B (2080 Ti) | 38.4 t/s | **95.02** total (23.76×4) | **88.28** total (21.7-22.2×4) | 2.3-2.5× |
+| DS-V2-Lite (2080 Ti) | 78.3 t/s | **198.59** total | **188.25** total | 2.4-2.5× |
+| DeepSeek-V4-Flash (4090) | 35.4-35.8 t/s | **89.66** total | **88.10** total | 2.5× |
+
+Concurrent throughput = **2.3-2.5× a single session**; cross-domain vs same-domain is only **-5-7%** — no per-domain cache pools needed. VRAM grows only by the per-slot KV cache (+2.9 GB for 4 slots), RAM stays flat (+0.2 GB). **One AI PC can serve multiple users at once.** Full report: [concurrent-cache-sharing-20260812.md](references/concurrent-cache-sharing-20260812.md)
+
 ## Quick start
 
 **One-line install (Linux x86_64 + NVIDIA GPU):**
