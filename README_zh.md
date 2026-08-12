@@ -10,6 +10,8 @@
 
 > ⭐ **觉得有用？点个 Star** —— 让更多需要的人发现它。[★ 去 GitHub 点赞](https://github.com/yalun753/moe-l2)
 
+> 💬 **实测数据汇总 & 快速上手** —— 完整 benchmark 表格、内存数字、安装指南：[Discussions #2](https://github.com/yalun753/moe-l2/discussions/2)
+
 | 你的显卡 | 正常能跑 | **用了 moe-l2** | **实测速度**（RTX 4090） |
 |----------|---------|-----------------|----------------------|
 | 4 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **145.63 t/s** |
