@@ -8,6 +8,8 @@
 
 > ⭐ **Found this useful? Give us a star** — it helps others discover the project. [★ Star on GitHub](https://github.com/yalun753/moe-l2)
 
+> 💬 **Measured results & quick start** — full benchmark table, memory numbers, and install guide: [Discussion #2](https://github.com/yalun753/moe-l2/discussions/2)
+
 ### Real-world benchmark
 
 | Your GPU | Normally fits | **With moe-l2** | **Measured speed** (RTX 4090) |
