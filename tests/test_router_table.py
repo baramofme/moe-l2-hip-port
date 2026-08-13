@@ -6,9 +6,7 @@ import os
 import pytest
 
 from moe_l2.router_table import (
-    DEFAULT_DATA_DIR,
     _parse_router_map_json,
-    auto_collect,
     build_router_map_file,
     compute_budget,
     filter_hot_domains,
@@ -16,7 +14,6 @@ from moe_l2.router_table import (
     model_id_from_path,
     top_k_for_coverage,
 )
-
 
 # ── model_id_from_path ─────────────────────────────────────────────
 
