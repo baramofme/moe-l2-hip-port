@@ -188,7 +188,9 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
                     if getattr(self, "_pretoucher", None) is None:
                         self._pretoucher = _ExpertPretoucher(
                             _MODEL_PATH, _PRETOUCH_GB)
-                    expert_map = load_mapping()
+                    from .router_table import model_id_from_path
+                    expert_map = load_mapping(
+                        model_id=model_id_from_path(_MODEL_PATH) if _MODEL_PATH else None)
                     t = threading.Thread(
                         target=self._pretoucher.touch,
                         args=(domain, expert_map), daemon=True)
@@ -198,7 +200,9 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
 
             if not self.cache:
                 return
-            expert_map = load_mapping()
+            from .router_table import model_id_from_path
+            expert_map = load_mapping(
+                model_id=model_id_from_path(_MODEL_PATH) if _MODEL_PATH else None)
             self.cache.preload_domain(domain, expert_map)
             logger.info("Preloaded experts for domain=%s", domain)
 

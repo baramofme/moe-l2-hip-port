@@ -24,10 +24,13 @@ from pathlib import Path
 
 logger = logging.getLogger("moe-l2-router-flywheel")
 
-# 默认输出：moe_l2/data/domain_router_map_flywheel.json（pretouch 读 load_mapping 的路径）
+# 默认输出：moe_l2/data/domain_router_map_flywheel_{model_id}.json
+# [2026-08-13 flywheel B] flywheel 表按模型分文件：每个模型一张动态表，
+# 各模型热度/收敛数据互不干扰（医院=模型，各医院独立收敛）。
+# 旧单文件 domain_router_map_flywheel.json 退役（不再读写，留作 legacy）。
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "moe_l2" / "data"
-DEFAULT_MAP_PATH = DATA_DIR / "domain_router_map_flywheel.json"
+DEFAULT_MAP_PATH = DATA_DIR / "domain_router_map_flywheel.json"  # legacy fallback（无 model_id 时）
 
 # 每层每领域保留的高频专家数（与验证报告 top-75 对齐；Qwen 用 top-100 也兼容）
 DEFAULT_TOP_K = 75
@@ -45,11 +48,19 @@ class DomainRouterFlywheel:
 
     def __init__(
         self,
-        map_path: Path = DEFAULT_MAP_PATH,
+        map_path: Path | None = None,
+        model_id: str = "",
         top_k: int = DEFAULT_TOP_K,
         rebuild_every: int = REBUILD_EVERY_N,
         min_records: int = MIN_RECORDS_FOR_REBUILD,
     ) -> None:
+        # [2026-08-13 flywheel B] 按模型分文件：map_path 未显式指定时，
+        # 用 domain_router_map_flywheel_{model_id}.json；无 model_id 时回退 legacy 单文件。
+        if map_path is None:
+            if model_id:
+                map_path = DATA_DIR / f"domain_router_map_flywheel_{model_id}.json"
+            else:
+                map_path = DEFAULT_MAP_PATH
         self.map_path = Path(map_path)
         self.top_k = top_k
         self.rebuild_every = rebuild_every
@@ -60,6 +71,8 @@ class DomainRouterFlywheel:
         # 聚合计数：domain -> layer -> Counter(expert_id -> 次数)
         self._agg: dict[str, dict[int, Counter]] = defaultdict(
             lambda: defaultdict(Counter))
+        # 领域热度：[2026-08-13] domain -> 请求次数（热门领域依据）
+        self._dom_freq: Counter = Counter()
         self._records = 0
         self._rebuilds = 0
         self._lock = __import__("threading").Lock()
@@ -67,11 +80,20 @@ class DomainRouterFlywheel:
     # ── 入口 ────────────────────────────────────────────────
 
     def set_domain(self, domain: str) -> None:
-        """请求级：当前请求判定为哪个领域（proxy 判完 domain 后调用）。"""
+        """请求级：当前请求判定为哪个领域（proxy 判完 domain 后调用）。
+
+        [2026-08-13] 同时累计领域请求次数（热门领域热度榜）。
+        """
         if not domain:
             return
         with self._lock:
             self._domain = domain
+            self._dom_freq[domain] += 1
+
+    def hot_domains(self, n: int) -> list[str]:
+        """[2026-08-13] 热度榜前 N 名领域（按请求次数降序）。"""
+        with self._lock:
+            return [d for d, _ in self._dom_freq.most_common(n)]
 
     def on_expert_line(self, line: str) -> None:
         """喂一条 EXPERT 路由日志行（gate.on_log_line 同源解析，格式一致）。
@@ -140,6 +162,7 @@ class DomainRouterFlywheel:
             "source": "flywheel",
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "top_k": self.top_k,
+            "dom_freq": dict(self._dom_freq),  # [2026-08-13] 领域热度榜
             "domains": domains,
         }
 

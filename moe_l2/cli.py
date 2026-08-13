@@ -370,10 +370,20 @@ def main():
     start_parser.add_argument(
         "--router-top-k",
         type=int,
-        default=100,
+        default=75,
         help=(
-            "[moe-l2 2026-08-10] Top-K experts per layer for auto-generated router "
-            "map (default: 100). Only used when --router-map is not given."
+            "[moe-l2 2026-08-13] Max experts per layer for auto-generated router "
+            "map (default: 75 = coverage ~90%). Only used when --router-map is not given."
+        ),
+    )
+    start_parser.add_argument(
+        "--coverage-target",
+        type=float,
+        default=0.90,
+        help=(
+            "[moe-l2 2026-08-13] Coverage target for auto router map (default: 0.90). "
+            "top-k derived from measured coverage curve (80%->30, 85%->50, "
+            "90%->75, 95%->100), then clamped by VRAM budget."
         ),
     )
 
@@ -782,41 +792,20 @@ def cmd_start(args):
             return 1
 
         try:
-            # [moe-l2 2026-08-10 selective pin] 自动生成 router map（若未指定且
-            # 本地有路由表）；显式 --router-map 优先。
+            # [moe-l2 2026-08-13 路由表重构] 按模型名选表，缺失自动收集（用户不感知）。
+            # 显式 --router-map 优先。
             router_map_path = getattr(args, "router_map", None)
             router_top_k = getattr(args, "router_top_k", 100)
             if router_map_path is None:
-                try:
-                    from scripts.bench.export_router_map import (
-                        load_tables,
-                        parse_table,
-                        union_layers,
-                    )
-                    data_dir = Path(__file__).resolve().parent.parent / "moe_l2" / "data"
-                    fly, topics, agg = load_tables(str(data_dir))
-                    tables = []
-                    for p in (fly, topics, agg):
-                        if p:
-                            tables.append(parse_table(p))
-                    if tables:
-                        union = union_layers(tables)
-                        # top-k 截断（并集通常 < top-k，一般不触发）
-                        import tempfile
-                        tmp = tempfile.NamedTemporaryFile(
-                            "w", suffix=".router.map", delete=False, prefix="moe-l2-router-"
-                        )
-                        for layer in sorted(union.keys()):
-                            experts = sorted(union[layer])[:router_top_k]
-                            tmp.write(f"{layer} " + " ".join(str(e) for e in experts) + "\n")
-                        tmp.close()
-                        router_map_path = tmp.name
-                        print(
-                            f"  selective pin: auto-generated router map "
-                            f"({len(union)} layers, top-k={router_top_k}) -> {router_map_path}"
-                        )
-                except Exception as e:
-                    print(f"  selective pin: router map generation skipped ({e})")
+                from moe_l2.router_table import build_router_map_file
+
+                data_dir = Path(__file__).resolve().parent.parent / "moe_l2" / "data"
+                router_map_path = build_router_map_file(
+                    model_path,
+                    router_top_k=router_top_k,
+                    data_dir=data_dir,
+                    coverage_target=getattr(args, "coverage_target", 0.90),
+                )
             llama_proc = _start_llama_server(model_path, _GPU_PORT, router_map_path, router_top_k)
         except FileNotFoundError as e:
             print(f"  ERROR: {e}")
@@ -845,16 +834,19 @@ def cmd_start(args):
         from .predictor import load_mapping
         try:
             # [moe-l2 2026-08-09] 路由表数据飞轮：真实路由按领域聚合 → 自动更新路由表
+            # [2026-08-13 flywheel B] 按模型分文件：flywheel_{model_id}.json
             from .domain_router_flywheel import DomainRouterFlywheel
-            router_flywheel = DomainRouterFlywheel()
+            from .router_table import model_id_from_path
+            _fw_model_id = model_id_from_path(args.model)
+            router_flywheel = DomainRouterFlywheel(model_id=_fw_model_id)
             gate = RoutingProfiler(
                 cache=cache,
-                expert_map=load_mapping(),
+                expert_map=load_mapping(model_id=_fw_model_id),
                 router_flywheel=router_flywheel,
             )
             gate_thread = _spawn_gate_reader(llama_proc, gate)
             print("  gate:     online routing adaptation (LLAMA_EXPERT_LOG) enabled")
-            print("  flywheel: router map auto-rebuild (domain_router_map_flywheel.json)")
+            print(f"  flywheel: router map auto-rebuild (domain_router_map_flywheel_{_fw_model_id}.json)")
         except Exception as e:
             logger.warning("Gate init failed (non-fatal): %s", e)
             gate = None

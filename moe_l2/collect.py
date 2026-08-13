@@ -50,14 +50,15 @@ def model_id_from_path(model_path: str) -> str:
 
 
 def check_compatibility(model_path: str) -> dict:
-    """检查 GGUF 兼容性：arch 标签 + tensor 命名（_exps 后缀）
+    """检查 GGUF 兼容性：直接看文件内容，不依赖架构名白名单。
 
-    旧格式（TheBloke 早期 Mixtral 等）：
-      - general.architecture = llama（但含 MoE 权重）
-      - tensor 名 blk.0.ffn_gate.0.weight（带专家序号，无 _exps）
-    现代格式：
-      - general.architecture = mixtral / qwen2moe 等
-      - tensor 名 blk.0.ffn_gate_exps.weight
+    [2026-08-13 重构] 不再维护 moe_archs / expert_count key 白名单——
+    用户可能用任意模型（任何架构），逐个加白名单永远补不完。
+    判定完全从文件 tensor 推断：
+      - 是不是 MoE：有 ffn_*_exps.weight（现代）或 ffn_*.N.weight（旧格式）tensor
+      - 专家数：ffn_gate_exps 的 shape 维度推断
+      - 层数：tensor 名 blk.N. 前缀推断
+    架构名（general.architecture）只用于日志展示，不参与判定。
     """
     result = {"ok": False, "arch": None, "has_exps": False, "has_indexed": False, "n_experts": 0, "n_layers": 0, "sample_tensors": []}
 
@@ -69,7 +70,7 @@ def check_compatibility(model_path: str) -> dict:
         result["error"] = f"gguf-py 读取失败: {e}"
         return result
 
-    # arch 标签
+    # arch 标签（仅展示，不参与判定）
     try:
         arch_field = reader.get_field("general.architecture")
         arch = bytes(arch_field.parts[-1]).decode("utf-8", "replace").strip("\x00")
@@ -77,65 +78,55 @@ def check_compatibility(model_path: str) -> dict:
     except Exception:
         result["arch"] = "?"
 
-    # tensor 命名：扫描全部 tensor（专家 tensor 在文件后部）
+    # tensor 扫描：MoE 判定 + 专家数/层数推断（全部来自文件本身）
     sample = []
     has_exps = False
     has_indexed = False
     n_experts_from_tensors = 0
+    n_layers_from_tensors = 0
     for t in reader.tensors:
         name = t.name
         if len(sample) < MODEL_ID_MAX_LOOKUP:
             sample.append(name)
-        if "_exps" in name:
+        # 现代格式：blk.N.ffn_gate_exps.weight / ffn_up_exps / ffn_down_exps
+        if re.search(r"ffn_(gate|up|down)_exps", name):
             has_exps = True
+            if "gate" in name:
+                try:
+                    n_experts_from_tensors = max(n_experts_from_tensors, int(t.shape[-1]))
+                except Exception:
+                    pass
         # 旧格式：blk.N.ffn_gate.M.weight（带专家序号）
-        if re.search(r"ffn_(gate|up|down)\.\d+\.weight", name):
+        m_indexed = re.search(r"ffn_(gate|up|down)\.(\d+)\.weight", name)
+        if m_indexed:
             has_indexed = True
-        # 从 tensor 形状推断专家数：ffn_gate_exps 的 ne[2] 或 ne[3]
-        if "ffn_gate_exps" in name or "ffn_gate" in name and ".weight" in name and hasattr(t, "shape"):
             try:
-                n_experts_from_tensors = max(n_experts_from_tensors, int(t.shape[-1]))
+                n_experts_from_tensors = max(n_experts_from_tensors, int(m_indexed.group(2)) + 1)
+            except Exception:
+                pass
+        # 层数：blk.N. 前缀
+        m_blk = re.match(r"blk\.(\d+)\.", name)
+        if m_blk:
+            try:
+                n_layers_from_tensors = max(n_layers_from_tensors, int(m_blk.group(1)) + 1)
             except Exception:
                 pass
 
     result["has_exps"] = has_exps
     result["has_indexed"] = has_indexed
     result["sample_tensors"] = sample[:8]
+    result["n_experts"] = n_experts_from_tensors
+    result["n_layers"] = n_layers_from_tensors
 
-    # 元数据：专家数 / 层数
-    for key in ["mixtral.expert_count", "llama.expert_count", "qwen2moe.expert_count",
-                "deepseek2.expert_count", "deepseek.expert_count", "deepseek3.expert_count"]:
-        try:
-            result["n_experts"] = int(reader.get_field(key).parts[-1])
-            break
-        except Exception:
-            pass
-    for key in ["mixtral.block_count", "llama.block_count", "qwen2moe.block_count",
-                "deepseek2.block_count", "deepseek.block_count", "deepseek3.block_count"]:
-        try:
-            result["n_layers"] = int(reader.get_field(key).parts[-1])
-            break
-        except Exception:
-            pass
-    # 元数据没拿到时用 tensor 形状推断
-    if result["n_experts"] == 0:
-        result["n_experts"] = n_experts_from_tensors
-
-    # 判定
-    # 注意：Mixtral 等现代 MoE 的 arch 标签可能是 "llama"（llama.cpp 用
-    # llama.expert_count + _exps tensor 表示 MoE）。因此 arch=="llama" 时
-    # 需额外要求 n_experts>0（普通 dense llama 无 expert_count，放行会误判）。
-    moe_archs = {"mixtral", "qwen2moe", "qwen3moe", "deepseek2", "deepseek3", "llama4", "granitemoe"}
-    arch_ok = result["arch"] in moe_archs or (result["arch"] == "llama" and result["n_experts"] > 0)
-    result["ok"] = arch_ok and has_exps and not has_indexed
-    if not arch_ok:
-        result["reason"] = f"arch='{result['arch']}' 不是已知 MoE 架构（llama 需含 expert_count）"
-    elif not has_exps:
-        result["reason"] = "tensor 命名缺少 _exps 后缀（旧格式，llama.cpp 不认）"
-    elif has_indexed:
-        result["reason"] = "tensor 命名带专家序号（ffn_gate.N.weight，旧格式）"
-    else:
-        result["reason"] = "OK"
+    # 判定：完全基于文件内容
+    if not has_exps and not has_indexed:
+        result["reason"] = "文件中没有 MoE 专家 tensor（ffn_*_exps / ffn_*.N.weight）——不是 MoE 模型"
+        return result
+    if has_indexed and not has_exps:
+        result["reason"] = "旧格式专家 tensor（ffn_gate.N.weight，无 _exps）——llama.cpp 新版本不识别，跳过"
+        return result
+    result["ok"] = True
+    result["reason"] = "OK"
     return result
 
 
