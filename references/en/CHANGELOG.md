@@ -6,6 +6,18 @@ Format: Keep a Changelog 1.1 style — Added / Changed / Fixed.
 
 ---
 
+## [0.8.1] - 2026-08-14
+
+### Fixed
+- **Flywheel router-map per-model isolation (flywheel B)** — each model now converges its own dynamic table (`domain_router_map_flywheel_{model_id}.json`); models no longer pollute each other's hot-expert statistics. Legacy single-file `domain_router_map_flywheel.json` retired (kept as read-only fallback when no model_id is available).
+- **Domain hotness ranking** — flywheel tracks per-domain request frequency (`_dom_freq`) as the basis for hot-domain routing decisions.
+- `_DEFAULT_BINS_TAG` → `bins-v0.4.1` — includes the **P0 fix** (expert-cache D2D copy now carries `es+padding`; concurrent cache-set protected by a mutex). Cache-hit reads no longer return garbage from padding bytes; verified full-chain on 2080 Ti & 4090.
+
+### Changed
+- README (EN/ZH): download/install docs point to `bins-v0.4.1` (~1.6 GB multi-arch, sm_61/75/86/89/120a).
+
+---
+
 ## [0.8.0] - 2026-08-10
 
 ### Added

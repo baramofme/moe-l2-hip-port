@@ -60,9 +60,9 @@ Live capture: Qwen3.6-35B-A3B generating **3,200 tokens with VRAM pinned at ~2.4
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 ```
 
-### Multi-architecture binaries (bins-v0.4.0, 2026-08-10)
+### Multi-architecture binaries (bins-v0.4.1, 2026-08-14)
 
-One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.4.0 includes the **selective pin (router-map driven)** + **GPU cache prefill** + **on-demand pin main path** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + layered pin (`MOE_L2_PIN_LAYERS`) + A3 cache 2048 slots + cuda-libs (no libnccl — not needed for single-GPU).
+One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.4.1 includes the **selective pin (router-map driven)** + **GPU cache prefill** + **on-demand pin main path** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + layered pin (`MOE_L2_PIN_LAYERS`) + A3 cache 2048 slots + cuda-libs (no libnccl — not needed for single-GPU) + **P0 fix: expert-cache D2D copy includes padding + concurrent set lock** (output garbage from cache-hit padding reads eliminated, verified on 2080 Ti & 4090).
 
 | GPU | Architecture | DS-V2-Lite gen | Qwen3.6-A3B gen | VRAM |
 |-----|-------------|----------------|-----------------|------|
@@ -247,7 +247,7 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU; spawns bundled on-demand pin llama-server on 11436)
 
-> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~2.0 GB multi-architecture on the `bins-v0.4.0` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.6 GB multi-architecture on the `bins-v0.4.1` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 

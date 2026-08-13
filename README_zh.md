@@ -65,9 +65,9 @@
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 ```
 
-### 多架构二进制（bins-v0.4.0，2026-08-10）
+### 多架构二进制（bins-v0.4.1，2026-08-14）
 
-**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.4.0 含 **selective pin（路由表驱动）** + **GPU cache 预填充** + **on-demand pin 主路径** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ 分层 pin（`MOE_L2_PIN_LAYERS`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）。
+**一个二进制兼容所有 NVIDIA 消费卡**——GTX 1080（sm_61）到 RTX 50 系（sm_120a）。CUDA 12.8 编译，无需按显卡单独编译，`moe-l2 download-bins` 自动拉取。bins-v0.4.1 含 **selective pin（路由表驱动）** + **GPU cache 预填充** + **on-demand pin 主路径** + 专家页淘汰 v3.1（`MOE_L2_LRU_MAX_EXPERTS=N`）+ 分层 pin（`MOE_L2_PIN_LAYERS`）+ A3 cache 2048 槽 + cuda-libs（无 libnccl，单卡不需要）+ **P0 修复：expert-cache D2D 拷贝含 padding + 并发 set 加锁**（cache 命中读 padding 区垃圾导致输出乱码已消除，2080 Ti & 4090 双机验证）。
 
 | 显卡 | 架构 | DS-V2-Lite 生成 | Qwen3.6-A3B 生成 | 显存 |
 |------|------|----------------|-----------------|------|
@@ -105,7 +105,7 @@ pip install moe-l2
 ```bash
 moe-l2 download-bins
 ```
-从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.4.0，约 2.0 GB 多架构全兼容包，含 cuda-libs）。
+从 GitHub Release 拉取预编译的 CUDA llama-server（bins-v0.4.1，约 1.6 GB 多架构全兼容包，含 cuda-libs）。
 
 ### 3. 启动
 
@@ -219,7 +219,7 @@ L3 ─ SSD 冷存储    GGUF 文件 mmap，冷专家页按需读入 + v3.1 淘�
 - `--port 11435`（默认）
 - `--gpu`：启用 GPU 模式（需要 CUDA + NVIDIA 显卡）
 
-> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.4.0 约 2.0 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，含 cuda-libs），运行时通过 `moe-l2 download-bins` 获取。
+> **GPU 二进制**：不在 git 中追踪（`llama_bins.tar.gz`，bins-v0.4.1 约 1.6 GB 多架构包，sm_61/75/86/89/120a 一个二进制兼容所有 NVIDIA 消费卡，含 cuda-libs），运行时通过 `moe-l2 download-bins` 获取。
 
 ---
 
