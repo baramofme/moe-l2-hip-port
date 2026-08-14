@@ -35,7 +35,7 @@ vim examples/demo_a3_compression.sh
 bash examples/demo_a3_compression.sh
 ```
 
-### 输出示例（RTX 4090 / DS-V2-Lite Q2_K，2026-08-10 实测，bins-v0.4.0 selective pin）
+### 输出示例（RTX 4090 / DS-V2-Lite Q2_K，2026-08-14 实测，bins-v0.4.1 P0 修复版 selective pin）
 
 ```
 ==============================================
@@ -44,17 +44,17 @@ bash examples/demo_a3_compression.sh
 
                         OG (full GPU)     moe-l2 (selective pin)
   ────────────  ────────────────────  ────────────────────
-  VRAM used                23300 MB             4900 MB
-  Speed                    65 t/s             145.63 t/s
-  Savings                          -       18400 MB (4.75x)
+  VRAM used                23300 MB            10000 MB
+  Speed                    65 t/s             133.2 t/s
+  Savings                          -      13300 MB (2.3x)
 ```
 
-Prompt 处理：OG 110 t/s、moe-l2 selective pin 下 DS 生成 **145.63 t/s**（反超全 GPU 224%）。
+Prompt 处理：OG 110 t/s、moe-l2 selective pin 下 DS 生成 **133.2 t/s**（2026-08-14 bins-v0.4.1 修复版；旧 145.63 为 P0 假速度作废）。
 
 ### 结果怎么看
 
-- **VRAM used**：模型加载后占用的 GPU 显存（减去空闲值）。OG 模式把 ~23.3 GB 的 DS-V2-Lite 全量加载，moe-l2 selective pin 模式只有 ~4.9 GB（专家驻 CPU RAM，只 pin 热专家）。
-- **Speed**：moe-l2 selective pin 下专家从 CPU pinned 内存经 PCIe 拷入（只拷激活专家），DS 生成 **145.63 t/s**（反超全 GPU 224%）。单用户聊天场景远超流畅门槛。
+- **VRAM used**：模型加载后占用的 GPU 显存（减去空闲值）。OG 模式把 ~23.3 GB 的 DS-V2-Lite 全量加载，moe-l2 selective pin 模式约 ~10 GB（专家驻 CPU RAM，只 pin 热专家）。
+- **Speed**：moe-l2 selective pin 下专家从 CPU pinned 内存经 PCIe 拷入（只拷激活专家），DS 生成 **133.2 t/s**（2026-08-14 bins-v0.4.1 修复版；旧 145.63 为 P0 假速度作废）。单用户聊天场景远超流畅门槛。
 
 ### 显存监控原理
 

@@ -1,4 +1,6 @@
-# Concurrent Cache Sharing Verification (2026-08-12)
+# Concurrent Cache Sharing Verification (2026-08-12, re-measured 2026-08-14)
+
+> ⚠️ **2026-08-14 update: all 08-12 numbers below are P0-void** — they were measured on bins-v0.4.0 with the expert-cache race bug (cache false-hits return garbage but inflate speed). The 2026-08-14 fixed build (bins-v0.4.1) re-measures at the end of this document: **concurrency is clean (16/16 outputs normal, no garbage), no per-session slowdown, no cross-domain eviction.**
 
 > Goal: when concurrent multi-slot requests share the A3 cache / selective pin, do they evict each other's cache hits and speed — verifying moe-l2's capability for the "one machine, multiple users at once" scenario.
 > This is the measured completion of "Risk 6: concurrent cross-domain requests evict each other in the shared cache — concurrency listed as a follow-up special topic" from the flywheel plan document.
@@ -76,3 +78,23 @@
 
 - Test script: `测试数据备份/concurrent_cache_test.py`
 - Server log: `测试数据备份/concurrent-cache-20260812/concurrent_test.log`
+
+## 2026-08-14 re-measure (bins-v0.4.1 fixed build, RTX 4090) — P0 fix verified under concurrency
+
+**Environment**: bjb1 (RTX 4090), DS-V2-Lite Q2_K, full pipeline `moe-l2 start --gpu` (proxy 11435), 4 threads × 4 requests = 16 requests per round, max_tokens=128, output-quality checked per request (slash/question/repeat-garbage detector).
+
+| Round | Domains triggered (gate) | Output quality | Per-session gen t/s | VRAM peak | RSS |
+|---|---|---|---|---|---|
+| 1. Same-domain (all coding) | 1 domain (codegen) | **16/16 normal, 0 garbage** ✅ | 113.5-124.7 (avg 121.8) | ~10.1 GB | ~7.1 GB |
+| 2. Multi-domain (Chinese 4 designs) | 2 domains (codegen ×4 / chinese_tech ×12) | **16/16 normal, 0 garbage** ✅ | avg 134.2 | ~10.1 GB | ~6.9 GB |
+| 3. Multi-domain (EN+ZH mix) | 4 domains (codegen ×8 / chinese_tech ×4 / general_qa ×2 / debug ×2) | **16/16 normal, 0 garbage** ✅ | 78.2-140.2 (avg 133.5) | ~10.1 GB | ~6.9 GB |
+
+**Conclusions (fixed build)**:
+1. **P0 concurrency garbage bug is fixed** — DS is the litmus test (old lockless build always produced garbage under concurrency); 48/48 requests across three rounds are clean.
+2. **No per-session slowdown under concurrency** — per-session avg 122-134 t/s vs single-session steady 124-130 t/s (~±3-6%, noise), mutex cost negligible, cache sharing holds (matches the 08-12 "no pooling needed" conclusion, now on clean data).
+3. **Multi-domain (4 domains) concurrency does not evict or corrupt** — gate domain prediction works under concurrent load (coding→codegen, EN general→general_qa/debug, ZH general→chinese_tech); EN prompts discriminate domains better than ZH on DS (classifier property).
+4. VRAM stays ~10.1 GB across concurrency (only per-slot KV cost), RSS ~6.9-7.1 GB.
+
+> Note: same-domain round 1 per-session avg (121.8) is slightly lower than multi-domain rounds (133-134) — random prompt variance, not domain effect. All rounds well within single-session noise.
+
+**Scripts/data**: `/root/bench_4090_concurrent.py` (same-domain), `/root/bench_4090_multidomain.py` (multi-domain) on bjb1; results `/root/bench_4090_concurrent_DS.txt`, `/root/bench_4090_multidomain_DS.txt`.

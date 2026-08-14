@@ -1,18 +1,18 @@
-# DeepSeek-V2-Lite-Chat-Uncensored Q2_K Benchmark Report (updated 2026-08-10)
+# DeepSeek-V2-Lite-Chat-Uncensored Q2_K Benchmark Report (updated 2026-08-14)
 
-## Latest Results (2026-08-10): Three-GPU Full-Pipeline Re-test (bins-v0.4.0 / selective pin)
+## Latest Results (2026-08-14): bins-v0.4.1 Fixed Re-measure (P0 expert-cache race fixed 2026-08-13)
 
-> Re-tested with the bins-v0.4.0 multi-arch binaries + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 2080 Ti / 4090 / 5090. Compared with the official stock llama.cpp binaries (6.89-16.63 t/s range) at +288%~+1166%, further confirming the real performance of the moe-l2 optimized build.
+> Re-measured with the bins-v0.4.1 fixed build (P0 expert-cache race fixed 2026-08-13; the 2026-08-10 bins-v0.4.0 numbers were P0-void fake speeds) + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 2080 Ti / 4090 (5090 pending re-measure). Compared with the official stock llama.cpp binaries (6.89-16.63 t/s range) at +251%~+1137%, confirming the real performance of the moe-l2 optimized build.
 
-### Measured (2026-08-10, full pipeline selective pin, round 3 stable round)
+### Measured (2026-08-14, bins-v0.4.1 re-measure)
 
 | GPU | Short conversation | Follow-up 1 | Follow-up 2 | VRAM | RSS |
 |-----|--------|-------|-------|------|-----|
-| RTX 2080 Ti | 81.72 | **87.25** | 86.40 | ~1.0-2.4 GB | — |
-| RTX 4090 | 134.05 | **145.63** | 127.95 | 4.9 GB | 2.1 GB |
-| RTX 5090 | 118.53 | **135.57** | 152.88 | ~1.3-2.5 GB | — |
+| RTX 2080 Ti | ⚠️ P0-void | **85.25** | ⚠️ P0-void | TBD | — |
+| RTX 4090 | ⚠️ P0-void | **133.2** | ⚠️ P0-void | ~10 GB | ~6.7 GB |
+| RTX 5090 | ⚠️ P0-void, pending re-measure | ⚠️ P0-void, pending re-measure | ⚠️ P0-void, pending re-measure | TBD | — |
 
-### Full Rounds
+### Full Rounds (⚠️ P0-void, 2026-08-13 voided — 08-10 bins-v0.4.0 numbers kept for the record; fixed re-measure values in the table above)
 
 **RTX 2080 Ti** (region-42 cloud instance):
 
@@ -42,15 +42,15 @@
 | Round 4 | 122.98 | 139.60 | 137.10 |
 
 - Methodology: `python3 speed_test.py 11435` (64 tok/request, proxy full pipeline including router table + selective pin)
-- Stable values: 2080 Ti ~82-87, 4090 ~128-146, 5090 ~119-153 t/s; report takes round 3 follow-up 1
+- Stable values (P0-void rounds, 2026-08-13 voided): 2080 Ti ~82-87, 4090 ~128-146, 5090 ~119-153 t/s; report takes round 3 follow-up 1. bins-v0.4.1 fixed re-measure: 2080 Ti **85.25** / 4090 **133.2** t/s
 
 ### Key Conclusions (2026-08-10)
 
-1. **DS full pipeline at 87.25 t/s on 2080 Ti** (vs stock llama.cpp 6.89 t/s ≈ +1166%); 37.9 t/s on the 4090 — the 2080 Ti is actually faster (DS model is small, expert copy overhead is low, the 2080 Ti's PCIe 3.0 bottleneck is not significant)
-2. **DS full pipeline at 135.57 t/s on 5090** (vs stock llama.cpp 16.63 t/s ≈ +715%, supplementary same-machine measurement on 2026-08-10, round 3 follow-up 1; short conversation 118.53 / follow-up 2 152.88) — moe-l2 optimization unleashes Blackwell's real performance
-3. **DS full pipeline at 145.63 t/s on 4090** (vs the 08-02 single-arch baseline 37.5 t/s ≈ +288%, measured on 2026-08-10 with the fixed build, round 3 follow-up 1; short conversation 134.05 / follow-up 2 127.95; VRAM 4.9GB, RSS 2.1GB) — the sm_89 Ada kernel is the most mature, the 4090 overtakes the 5090
-4. **selective pin has zero overhead**: with the router table top-100 pinned, the 2080 Ti speed is stable
-5. **Cold start is noticeable**: round 1 short conversation 39.62 → round 2 81.67 (first-time router table load + expert pin + GPU cache warmup), stable from round 2 onward
+1. **DS full pipeline at 85.25 t/s on 2080 Ti** (vs stock llama.cpp 6.89 t/s ≈ +1137%, bins-v0.4.1 re-measure) — the earlier claim "the 2080 Ti is faster than the 4090" was based on P0-void data (4090 re-measures at 133.2 t/s)
+2. **DS on 5090: ⚠️ P0-void, pending re-measure** — the 2026-08-10 figure (135.57 t/s) was P0-void fake speed; no bins-v0.4.1 measurement yet
+3. **DS full pipeline at 133.2 t/s on 4090** (vs the 08-02 single-arch baseline 37.9 t/s ≈ +251%, bins-v0.4.1 re-measure, follow-up 1; re-test 124-130 t/s consistent; VRAM ~10GB, RSS ~6.7GB) — the sm_89 Ada kernel is the most mature (the "4090 overtakes the 5090" comparison is void — 5090 pending re-measure)
+4. **selective pin has zero overhead**: with the router table top-100 pinned, the 2080 Ti speed is stable (round-based conclusion; P0-void, 2026-08-13 voided)
+5. **Cold start is noticeable**: round 1 short conversation 39.62 → round 2 81.67 (first-time router table load + expert pin + GPU cache warmup), stable from round 2 onward (P0-void rounds, 2026-08-13 voided)
 
 ---
 

@@ -1,18 +1,18 @@
-# Qwen3.6-35B-A3B-UD-IQ2_M Benchmark Report (updated 2026-08-10)
+# Qwen3.6-35B-A3B-UD-IQ2_M Benchmark Report (updated 2026-08-14)
 
-## Latest Results (2026-08-10): Three-GPU Full-Pipeline Re-test (bins-v0.4.0 / selective pin)
+## Latest Results (2026-08-14): bins-v0.4.1 Fixed Re-measure (P0 expert-cache race fixed 2026-08-13)
 
-> Re-tested with the bins-v0.4.0 multi-arch binaries + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 2080 Ti / 4090 / 5090. Compared with the official stock llama.cpp binaries (9.71-11.15 t/s range) at +60%~+687%, further confirming the real performance of the moe-l2 optimized build.
+> Re-measured with the bins-v0.4.1 fixed build (P0 expert-cache race fixed 2026-08-13; the 2026-08-10 bins-v0.4.0 numbers were P0-void fake speeds) + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 2080 Ti / 4090 (5090 pending re-measure). 2080 Ti measures 30.87 t/s (locked-version card) vs the official stock llama.cpp binary (11.15 t/s) ≈ +177%.
 
-### Measured (2026-08-10, full pipeline selective pin, round 3 stable round)
+### Measured (2026-08-14, bins-v0.4.1 re-measure)
 
 | GPU | Short conversation | Follow-up 1 | Follow-up 2 | VRAM | RSS |
 |-----|--------|-------|-------|------|-----|
-| RTX 2080 Ti | 41.66 | **47.24** | 42.89 | ~1.0-2.4 GB | — |
-| RTX 4090 | 65.08 | **74.99** | 63.71 | 3.1 GB | 2.3 GB |
-| RTX 5090 | 66.44 | **76.41** | 69.86 | ~1.3-2.5 GB | — |
+| RTX 2080 Ti | ⚠️ P0-void | **30.87** (locked-version card) | ⚠️ P0-void | TBD | — |
+| RTX 4090 | ⚠️ P0-void | **44-48** | ⚠️ P0-void | ~9.3 GB | ~11.4 GB |
+| RTX 5090 | ⚠️ P0-void, pending re-measure | ⚠️ P0-void, pending re-measure | ⚠️ P0-void, pending re-measure | TBD | — |
 
-### Full Rounds
+### Full Rounds (⚠️ P0-void, 2026-08-13 voided — 08-10 bins-v0.4.0 numbers kept for the record; fixed re-measure values in the table above)
 
 **RTX 2080 Ti** (region-42 cloud instance):
 
@@ -42,15 +42,15 @@
 | Round 4 | 66.78 | 76.45 | 68.19 |
 
 - Methodology: `python3 speed_test.py 11435` (64 tok/request, proxy full pipeline including router table + selective pin)
-- Stable values: 2080 Ti ~41-47, 4090 ~64-75, 5090 ~66-76 t/s; report takes round 3 follow-up 1
+- Stable values (P0-void rounds, 2026-08-13 voided): 2080 Ti ~41-47, 4090 ~64-75, 5090 ~66-76 t/s; report takes round 3 follow-up 1. bins-v0.4.1 fixed re-measure: 2080 Ti **30.87** (locked-version card) / 4090 **44-48** t/s
 
 ### Key Conclusions (2026-08-10)
 
-1. **Qwen full pipeline at 47.24 t/s on 2080 Ti** (vs stock llama.cpp 11.15 t/s ≈ +324%); still 50.2 t/s on the 4090
-2. **Qwen full pipeline at 76.41 t/s on 5090** (vs stock llama.cpp 9.71 t/s ≈ +687%, supplementary same-machine measurement on 2026-08-10, round 3 follow-up 1; short conversation 66.44 / follow-up 2 69.86) — moe-l2 optimization unleashes Blackwell's real performance
-3. **Qwen full pipeline at 74.99 t/s on 4090** (vs the 08-02 single-arch baseline 46.8 t/s ≈ +60%, measured on 2026-08-10 with the fixed build, round 3 follow-up 1; short conversation 65.08 / follow-up 2 63.71; VRAM 3.1GB, RSS 2.3GB) — on par with the 5090
-4. **selective pin has zero overhead**: with the router table top-100 pinned, the 2080 Ti speed is the same order of magnitude as whole-pin
-5. **Cold start is noticeable**: round 1 26.75 → round 3 41.66 (first-time router table load + expert pin + GPU cache warmup), stable round in the table above
+1. **Qwen full pipeline at 30.87 t/s on 2080 Ti (locked-version card)** (vs stock llama.cpp 11.15 t/s ≈ +177%, bins-v0.4.1 re-measure) — the 4090 re-measures at 44-48 t/s
+2. **Qwen on 5090: ⚠️ P0-void, pending re-measure** — the 2026-08-10 figure (76.41 t/s) was P0-void fake speed; no bins-v0.4.1 measurement yet
+3. **Qwen full pipeline at 44-48 t/s on 4090** (bins-v0.4.1 re-measure, follow-up 1; re-test 36-46 t/s consistent; VRAM ~9.3GB, RSS ~11.4GB) — the "on par with the 5090" claim was based on P0-void data (5090 pending re-measure)
+4. **selective pin has zero overhead**: with the router table top-100 pinned, the 2080 Ti speed is the same order of magnitude as whole-pin (round-based conclusion; P0-void, 2026-08-13 voided)
+5. **Cold start is noticeable**: round 1 26.75 → round 3 41.66 (first-time router table load + expert pin + GPU cache warmup), stable round in the table above (P0-void rounds, 2026-08-13 voided)
 
 ---
 

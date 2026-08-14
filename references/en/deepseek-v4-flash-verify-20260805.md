@@ -1,37 +1,37 @@
-# DeepSeek V4 Flash Verification Report (updated 2026-08-10)
+# DeepSeek V4 Flash Verification Report (updated 2026-08-14)
 
-> ✅ **2026-08-10 4090 re-test (bins-v0.4.0 fixed build, full pipeline)**: V4 measured **35.96 t/s** (on-demand fallback, RSS 17.5GB); selective pin (v4_top100.map) **34.67 t/s** (RSS 26.8GB); VRAM 16.5-16.7GB. Compared with the stock llama.cpp binary (10.1 t/s) at +255%. Full 4-round data in the "08-10 re-test" section below.
+> ❌ **2026-08-14 status — P0-void (2026-08-13 voided) + quantization issue**: the 2026-08-10 bins-v0.4.0 measurement (**35.96 / 34.67 t/s**) was P0-void fake speed from the expert-cache race. Additionally, **UD-IQ2_M 2-bit quantization degrades to garbage (vanilla also affected)** — no valid speed data, waiting for Q4 quant. Full 4-round data (kept for the record) in the "08-10 re-test" section below.
 
-> ⚠️ **2026-08-10 benchmark correction**: the 10.1 t/s in this report is measured with the **official stock llama.cpp binary** (on-demand pin path); the moe-l2 optimized binary (selective pin, bins-v0.4.0) measures **35.96 t/s** on RTX 4090 with RSS **17.5-26.8GB**. The 08-05/08-07 data below is kept as historical record.
+> ⚠️ **2026-08-10 benchmark correction (itself P0-void, 2026-08-13 voided)**: the 10.1 t/s in this report is measured with the **official stock llama.cpp binary** (on-demand pin path); the moe-l2 optimized binary (selective pin, bins-v0.4.0) measured **35.96 t/s** (P0-void fake speed) on RTX 4090 with RSS **17.5-26.8GB**. The 08-05/08-07 data below is kept as historical record.
 
-> Status: **on-demand pin main path runs V4 Flash ✅ (RTX 4090 measured 10.1 t/s, 5x the original 1.7-2.0)**
+> Status: **⚠️ UD-IQ2_M 2-bit quantization degrades to garbage (vanilla also affected); no valid speed data, waiting for Q4 quant** (the earlier 10.1 t/s / 5x claims are P0-void, 2026-08-13 voided)
 > Related: `multi-arch-three-gpu-benchmark.md` (V4 full-pipeline re-test section), PyPI 0.7.1 / bins-v0.3.1 (on-demand pin main path)
 
 ---
 
-## Latest Results (2026-08-10): bins-v0.4.0 full pipeline, 35.96 t/s on 4090
+## Latest Results (2026-08-14): P0-void — no valid speed data for V4 Flash (waiting for Q4 quant)
 
-> **bins-v0.4.0 (selective pin + on-demand fallback) takes V4 from the stock binary's 10.1 t/s to 35.96 t/s (+255%) on RTX 4090**, with RSS down from whole-pin 84GB to 17.5-26.8GB. A 90GB model runs smoothly on a 24GB card + 1TB RAM machine.
+> **⚠️ P0-void (2026-08-13 voided)**: the 2026-08-10 bins-v0.4.0 speed figures (35.96 / 34.67 t/s) were fake speed from the expert-cache race; **UD-IQ2_M 2-bit quantization also degrades to garbage (vanilla affected too)** — no valid speed data, waiting for Q4 quant. Memory observations (RSS 17.5-26.8GB vs whole-pin 84GB) kept below.
 
 ### One-line Conclusion
 
-**moe-l2 runs DeepSeek V4 Flash (UD-IQ2_M, 85GB in three shards) on RTX 4090 with bins-v0.4.0 at 35.96 t/s (on-demand fallback, RSS 17.5GB) / 34.67 t/s (selective pin, RSS 26.8GB), VRAM 16.5-16.7GB** (measured 2026-08-10, full 4-round data in the "08-10 re-test" section at the end).
+**⚠️ P0-void (2026-08-13 voided) + quantization issue**: the 2026-08-10 claim of 35.96 / 34.67 t/s on RTX 4090 was fake speed; **UD-IQ2_M 2-bit quantization degrades to garbage (vanilla also affected)** — no valid speed data, waiting for Q4 quant. (Measured RSS 17.5-26.8GB / VRAM 16.5-16.7GB kept in the "08-10 re-test" section.)
 
-### Measured (RTX 4090 24GB, 2026-08-10, full pipeline `moe-l2 start --gpu`, round 3 stable round)
+### Measured (RTX 4090 24GB, 2026-08-10 run — ⚠️ speeds P0-void, 2026-08-13 voided; memory figures kept)
 
 | Configuration | Gen t/s | VRAM | RSS |
 |------|---------|------|-----|
-| on-demand fallback (auto router table) | **35.96** (short 34.44 / follow-up 2 35.96) | 16.5 GB | 17.5 GB |
-| selective pin (v4_top100.map) | **34.67** (short 33.84 / follow-up 2 34.64) | 16.7 GB | 26.8 GB |
-| Stock llama.cpp binary (control) | 10.1 | 17.4 GB | 82 GB |
+| on-demand fallback (auto router table) | ⚠️ P0-void (35.96 was fake speed) | 16.5 GB | 17.5 GB |
+| selective pin (v4_top100.map) | ⚠️ P0-void (34.67 was fake speed) | 16.7 GB | 26.8 GB |
+| Stock llama.cpp binary (control) | 10.1 (real stock speed; output also garbage — quantization issue, not moe-l2) | 17.4 GB | 82 GB |
 
-### Key Conclusions (2026-08-10)
+### Key Conclusions (2026-08-10, ⚠️ P0-void 2026-08-13)
 
-1. **V4 is stable at 34-36 t/s on the 4090** (both modes agree), +255% vs the stock binary
-2. **RSS drastically reduced**: whole-pin 84GB → on-demand 17.5GB (↓79%) / selective pin 26.8GB (↓68%)
-3. **10.1 t/s is the stock binary's real number**: the earlier "5x speedup" conclusion was based on the stock binary (1.7-2.0 → 10.1); the moe-l2 optimized build was already at the 30-35 t/s level
+1. **⚠️ 34-36 t/s was fake speed (P0-void)**: the expert-cache race inflated the numbers; additionally **UD-IQ2_M 2-bit quantization degrades to garbage (vanilla also affected)** — no valid speed data, waiting for Q4 quant
+2. **RSS reduced**: whole-pin 84GB → on-demand 17.5GB (↓57%) / selective pin 26.8GB (↓68%)
+3. **10.1 t/s is the stock binary's real number**: the earlier "5x speedup" conclusion was based on the stock binary (1.7-2.0 → 10.1); the "30-35 t/s level" claim for moe-l2 was P0-void fake speed. Note: vanilla (stock) output is also garbage under UD-IQ2_M — the quantization issue is model-side, not moe-l2
 
-#### Historical Conclusions (2026-08-07, on-demand pin era, kept for the record)
+#### Historical Conclusions (2026-08-07, on-demand pin era, kept for the record — ⚠️ speeds P0-void, 2026-08-13 voided)
 
 1. **V4 at 10.1 t/s on 4090 (5x the original 1.7-2.0)**; GPU util 13% → 86%, **already near compute-bound** (further speedup needs kernel/quantization optimization, not cache)
 2. **2048 slots is the cache sweet spot** (512 no gain, 4096 OOM), universal gains across three models
@@ -42,7 +42,7 @@
 
 > Zhihu question: "What about DS V4's output speed at long context 500K?" — answered honestly as follows.
 
-**Measured (short context, c=512)**: RTX 4090 + moe-l2 (on-demand pin + A3 cache 2048) at **10.1 t/s** (2026-08-07, stock binary basis; 08-10 bins-v0.4.0 measured 35.96 t/s).
+**Measured (short context, c=512)**: RTX 4090 + moe-l2 (on-demand pin + A3 cache 2048) at **10.1 t/s** (2026-08-07, stock binary basis; the 08-10 bins-v0.4.0 figure 35.96 t/s is P0-void, 2026-08-13 voided).
 
 **500K long context (not measured, deterministic inference given)**:
 
@@ -78,15 +78,15 @@
 
 ## Historical Verification (2026-08-05, v3.1 era, kept for the record)
 
-- 85GB three-shard GGUF runs on 2080 Ti (11GB): VRAM 8.4GB / 11GB, RSS capped by expert-page eviction v3.1 (11-12GB, vs 29GB without eviction) — **validates "10-11GB card can run an 85GB model"** (08-10 bins-v0.4.0 already hit 35.96 t/s on the 4090)
+- 85GB three-shard GGUF runs on 2080 Ti (11GB): VRAM 8.4GB / 11GB, RSS capped by expert-page eviction v3.1 (11-12GB, vs 29GB without eviction) — **validates "10-11GB card can run an 85GB model"** (the 08-10 bins-v0.4.0 figure 35.96 t/s is P0-void, 2026-08-13 voided)
 - Multi-shard GGUF parsing bug fix: detect the `-00001-of-` format → pick the largest shard for GGUFReader/L2Cache, llama-server still starts from shard 1 (dual-path separation)
 - Expert-page eviction v3.1: `MOE_L2_LRU_MAX_EXPERTS=N` fixed-expert-count LRU, Qwen near-zero speed loss (-2%), V4 RSS capped
 
-## 08-10 Re-test: 4090 Full Pipeline (bins-v0.4.0 fixed build)
+## 08-10 Re-test: 4090 Full Pipeline (bins-v0.4.0) — ⚠️ all speeds P0-void (2026-08-13 voided), kept for the record
 
 > Measured with the bins-v0.4.0 fixed build (downloaded from the GitHub release, includes libmtmd/libllama) on RTX 4090 full pipeline (`moe-l2 start --gpu`), collecting VRAM/memory at the same time. Both modes tested (auto router table generation failed → on-demand fallback; explicit v4_top100.map → selective pin).
 
-### Measured (RTX 4090, 2026-08-10, -c 8192)
+### Measured (RTX 4090, 2026-08-10, -c 8192) — ⚠️ P0-void, 2026-08-13 voided
 
 | Round | on-demand fallback (short/follow-up 1/follow-up 2) | selective pin explicit table (short/follow-up 1/follow-up 2) |
 |------|----------------------------------|----------------------------------------|
@@ -102,11 +102,11 @@
 | on-demand fallback | 17.5 GB (18,363,500 kB) | 16.5 GB (16,879 MiB) |
 | selective pin (v4_top100.map) | 26.8 GB (28,110,288 kB) | 16.7 GB (17,067 MiB) |
 
-### Conclusions (08-10)
+### Conclusions (08-10, ⚠️ speeds P0-void 2026-08-13)
 
-1. **V4 is stable at 34-36 t/s on the 4090** (both modes agree) — vs the stock llama.cpp binary (10.1 t/s) **+255%**; slightly higher than stage 1 (30.9 t/s)
-2. **RSS drastically reduced**: whole-pin 84GB → on-demand 17.5GB (↓79%) / selective pin 26.8GB (↓68%)
-3. Stage 1's 10.4GB RSS was pure selective pin without prefill configuration; this time GPU cache pre-filling is included, hence higher RSS and higher speed
+1. **⚠️ 34-36 t/s was fake speed (P0-void)**: the +255% claim vs the stock binary (10.1 t/s) is void; **UD-IQ2_M 2-bit quantization degrades to garbage (vanilla also affected)** — no valid speed data, waiting for Q4 quant (this also voids the stage-1 figure 30.9 t/s)
+2. **RSS reduced**: whole-pin 84GB → on-demand 17.5GB (↓57%) / selective pin 26.8GB (↓68%)
+3. Stage 1's 10.4GB RSS was pure selective pin without prefill configuration; this time GPU cache pre-filling is included, hence higher RSS (memory-side observation only)
 4. **Auto router table generation works now**: `--router-top-k` depends on `domain_router_map_v4_topics.json` / `domain_router_map_v4.json` under `moe_l2/data/` (shipped with the pip install, tracked in the git repo). Verified 2026-08-10: with the data files in place, auto generation produces **43 layers of top-100** (consistent with the explicit v4_top100.map content), selective pin takes effect (RSS 28.1GB); the earlier 08-10 morning test showing 0 layers was because the test machine hadn't synced the data/ directory — not a product defect. The explicit `--router-map v4_top100.map` (43 layers top-100, local backup in `测试数据备份/v0.8.0-selective-pin-20260810/router-map/`) still works as fallback.
 
 ## Environment Pitfalls (for reproduction)

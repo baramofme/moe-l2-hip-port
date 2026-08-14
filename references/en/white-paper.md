@@ -11,21 +11,21 @@
 
 ## 1. Executive Summary
 
-moe-l2 is an MoE (Mixture of Experts) inference acceleration solution for consumer NVIDIA GPUs. Its core capability is **running models that would normally need 16-24 GB of VRAM in 1.6-3.4 GB** (1.6-2.1 GB for short contexts, 2.4-3.4 GB for 8K long contexts), at roughly 58% of full-GPU speed.
+moe-l2 is an MoE (Mixture of Experts) inference acceleration solution for consumer NVIDIA GPUs. Its core capability is **running models that would normally need 16-24 GB of VRAM in ~9.3-10 GB** (~10 GB DS / ~9.3 GB Qwen on the 2026-08-14 bins-v0.4.1 fixed build; the old 1.6-3.4 GB figures were P0-garbage inflation, void), at roughly 2× full-GPU speed (205%).
 
-Core numbers (measured on RTX 4090, 2026-08-07, on-demand pin main path):
+Core numbers (measured on RTX 4090, 2026-08-14, bins-v0.4.1 fixed build, selective pin):
 
 | Metric | Full-GPU form | moe-l2 | Change |
 |------|------------|--------|------|
-| VRAM usage | 23.3 GB | **1.6-2.9 GB** | **-93%** |
-| Generation speed (DS-V2-Lite) | 65 t/s | **145.63 t/s** | 224% (beats full GPU) |
-| Generation speed (Qwen3.6-A3B) | — | **74.99 t/s** | beats pre-lazy 46.5 |
-| V4-Flash (157B/85GB, 4090) | OOM | **35.96 t/s** | RSS 17.5-26.8GB (on-demand/selective pin) |
-| Model/VRAM ratio | 0.26× | **3.9×** | +15x |
+| VRAM usage | 23.3 GB | **~10 GB** | **-57%** |
+| Generation speed (DS-V2-Lite) | 65 t/s | **133.2 t/s** (2026-08-14 bins-v0.4.1) | 205% (beats full GPU) |
+| Generation speed (Qwen3.6-A3B) | — | **44-48 t/s** (2026-08-14 bins-v0.4.1) | ≈ pre-lazy 46.5 |
+| V4-Flash (157B/85GB, 4090) | OOM | ⚠️ no valid speed data (UD-IQ2_M 2-bit garbage; waiting for Q4 quant) | RSS 17.5-26.8GB (on-demand/selective pin) |
+| Model/VRAM ratio | 0.26× | **0.6×** | — |
 
-> **Long-context supplementary measurements (2026-08-09, v5 default whole-pin, RTX 4090, -c 8192, 3200-token long generation)**: Qwen3.6-A3B **45.1 t/s @ 2.4 GB (2477 MiB)**, DS-V2-Lite **34.1 t/s @ 3.4 GB (3441 MiB)** — 8K context + long generation is closer to real usage; short-context short-generation reaches the 74.99 / 145.63 t/s in the table above (measured 2026-08-10 with bins-v0.4.0). Raw sampling data and full generated text are in the demo asset package (rec_data.csv / rec_full.txt).
+> **Long-context supplementary measurements (2026-08-09, v5 default whole-pin, RTX 4090, -c 8192, 3200-token long generation)**: Qwen3.6-A3B **45.1 t/s @ 2.4 GB (2477 MiB)**, DS-V2-Lite **34.1 t/s @ 3.4 GB (3441 MiB)** — ⚠️ **P0-void, pending re-measure** (measured before the 2026-08-13 cache-race fix). 8K context + long generation is closer to real usage; short-context short-generation reaches the 44-48 / 133.2 t/s in the table above (measured 2026-08-14 with bins-v0.4.1). Raw sampling data and full generated text are in the demo asset package (rec_data.csv / rec_full.txt).
 
-> **Multi-arch full compatibility (2026-08-10, bins-v0.4.0)**: one binary supports all consumer NVIDIA cards (GTX 1080 sm_61 → RTX 50 series sm_120a, compiled with CUDA 12.8). 2080 Ti full-pipeline measurements (bins-v0.4.0 + selective pin): DS-V2-Lite **87.25 t/s**, Qwen3.6-A3B **47.24 t/s** (2026-08-10, moe-l2-optimized multi-arch binary; the earlier 6.89/11.15 were official stock-binary numbers). Full report: [multi-arch-three-gpu-benchmark.md](multi-arch-three-gpu-benchmark.md). v0.4.0 includes selective pin + GPU cache prefill + flywheel router tables.
+> **Multi-arch full compatibility (2026-08-14, bins-v0.4.1 fixed build)**: one binary supports all consumer NVIDIA cards (GTX 1080 sm_61 → RTX 50 series sm_120a, compiled with CUDA 12.8). 2080 Ti full-pipeline measurements (bins-v0.4.1 + selective pin): DS-V2-Lite **85.25 t/s**, Qwen3.6-A3B **30.87 t/s (locked)** (2026-08-14, moe-l2-optimized multi-arch binary; the earlier 6.89/11.15 were official stock-binary numbers; 2080 Ti VRAM TBD). Full report: [multi-arch-three-gpu-benchmark.md](multi-arch-three-gpu-benchmark.md). v0.4.1 includes selective pin + GPU cache prefill + flywheel router tables (P0 cache-race fixed).
 
 One-sentence technical essence: **each MoE inference step activates only a few experts (top-2~8 out of hundreds); keeping all of them resident in VRAM is wasteful. moe-l2 keeps experts in CPU memory (zero VRAM); the GPU fetches only the activated experts each step, and hot experts stay cached on the GPU to avoid PCIe round trips.**
 
@@ -64,8 +64,8 @@ The result: MoE capabilities are locked behind the "VRAM gate" on high-end serve
 
 **Value proposition**:
 
-1. **93% VRAM reduction**: 23.3 GB → 1.6 GB (short context) / 3.4 GB (8K long context); 4 GB cards run 16B MoE, 8 GB cards run 32B MoE
-2. **Usable speed**: 75-146 t/s generation (4090, measured 2026-08-10 with bins-v0.4.0; 47-87 t/s on 2080 Ti), far beyond reading speed, smooth conversational experience
+1. **57% VRAM reduction**: 23.3 GB → ~10 GB (DS-V2-Lite, 2026-08-14 bins-v0.4.1; old 1.6-3.4 GB figures were P0-garbage inflation, void); 10-11 GB cards run 16B/32B MoE
+2. **Usable speed**: 44-133 t/s generation (4090, measured 2026-08-14 with bins-v0.4.1; 31-85 t/s on 2080 Ti), far beyond reading speed, smooth conversational experience
 3. **Zero migration**: OpenAI-compatible API; curl / Open WebUI / LangChain connect directly; no client code changes
 4. **Plug and play**: pip install + one command; no llama.cpp compilation
 
@@ -143,7 +143,7 @@ GPU VRAM (temporary expert buffer)
 output
 ```
 
-**Why fast**: expert weights stay resident in CPU memory (mmap lazy + on-demand pin registration); each step copies only the activated top-k experts (e.g. DS's 6 per layer × 1.55 MB ≈ 9.3 MB) instead of all 64 experts — copy volume is proportional to the activated count, not the model size. Measured gains (2026-08-10, bins-v0.4.0, 4090): DS 37.9 → 145.63 t/s (+284%), Qwen 50.2 → 74.99 t/s (+49%).
+**Why fast**: expert weights stay resident in CPU memory (mmap lazy + on-demand pin registration); each step copies only the activated top-k experts (e.g. DS's 6 per layer × 1.55 MB ≈ 9.3 MB) instead of all 64 experts — copy volume is proportional to the activated count, not the model size. Measured gains (2026-08-14, bins-v0.4.1, 4090): DS 37.9 → 133.2 t/s (+251%), Qwen 50.2 → 44-48 t/s (≈ pre-lazy 46.5, no meaningful gain).
 
 ### 3.4 Key mechanism 2: A3 LRU expert cache (no moving hot experts)
 
@@ -184,7 +184,7 @@ moe-l2's differentiation is **domain-aware preloading**:
 | 1 | A3 patch (experts forced CPU-resident) | 23.3 → 1.2 GB (-95%) | 8.6 t/s | ✅ verified |
 | 2 | host buffer (experts CPU-pinned + GPU direct compute) | 1.6 GB | **37.5 t/s** (+200%) | ✅ verified |
 | 3 | sched-cache (hot experts D2D) | 1.6 GB | Prompt 99→308 (+211%), Gen 39.2 (+5%) | ✅ verified (per-model enable) |
-| 4 | **selective pin (current mainline as of 08-10)** | 1.6-2.9 GB (V4 16.5-16.7GB VRAM) | **Qwen 74.99 / DS 145.63 / V4 34.67-35.96 t/s** | ✅ verified (current mainline) |
+| 4 | **selective pin (current mainline as of 08-14, bins-v0.4.1)** | ~9.3-10 GB (V4 16.5-16.7GB VRAM) | **Qwen 44-48 / DS 133.2 / V4 no valid speed data (2-bit garbage)** | ✅ verified (fixed build, current mainline) |
 
 ---
 
@@ -198,16 +198,16 @@ moe-l2's differentiation is **domain-aware preloading**:
 |------|------|-----------|---------|------|
 | DS-V2-Lite (16B MoE, 64 experts) | CPU buffer (old, experts computed on CPU) | 12.5 | 12.5 | 1615 MiB |
 | **DS-V2-Lite** | **host buffer (experts computed directly on GPU)** | **99.0** | **37.5** | **1625 MiB** |
-| **DS-V2-Lite** | **selective pin (08-10)** | — | **145.63 / 127.95** | **4.9 GB / 2.1 GB RSS** |
+| **DS-V2-Lite** | **selective pin (08-14, bins-v0.4.1)** | — | **133.2 / 124-130 (re-measure)** | **~10 GB / ~6.7 GB RSS** |
 | Qwen3.6-A3B (32B MoE, 256 experts) | CPU buffer (old) | 10.0 | 10.0 | 2141 MiB |
 | **Qwen3.6-A3B** | **host buffer** | **75.8** | **46.8** | **2147 MiB** |
-| **Qwen3.6-A3B** | **selective pin (08-10)** | — | **74.99 / 63.71** | **3.1 GB / 2.3 GB RSS** |
+| **Qwen3.6-A3B** | **selective pin (08-14, bins-v0.4.1)** | — | **44-48 / 36-46 (re-measure)** | **~9.3 GB / ~11.4 GB RSS** |
 | V4-Flash (157B/85GB) | lazy no pin (08-05) | — | 1.7-2.0 | 9.1 GB |
-| **V4-Flash** | **selective pin / on-demand (08-10)** | — | **34.67 / 35.96** | **26.8 / 17.5 GB RSS** |
+| **V4-Flash** | **selective pin / on-demand (08-10)** | — | ⚠️ no valid speed data (UD-IQ2_M 2-bit garbage; waiting for Q4 quant) | **26.8 / 17.5 GB RSS** |
 
-- DS-V2-Lite: speed **+284%** (37.9 → 145.63 t/s, bins-v0.4.0 08-10)
-- Qwen3.6-A3B: speed **+49%** (50.2 → 74.99 t/s, beats pre-lazy 46.5)
-- V4-Flash: **RSS 84.4 → 17.5-26.8GB (↓68~79%)**, speed 34.67-35.96 t/s (the earlier 10.1 t/s was the official stock binary; moe-l2's optimized build was always ~30-35 t/s), near compute-bound on 4090
+- DS-V2-Lite: speed **+251%** (37.9 → 133.2 t/s, bins-v0.4.1 08-14)
+- Qwen3.6-A3B: speed 50.2 → 44-48 t/s (bins-v0.4.1 08-14, ≈ pre-lazy 46.5; the +49% gain claim is removed — no meaningful gain)
+- V4-Flash: **RSS 84.4 → 17.5-26.8GB (↓68~79%)**, speed ⚠️ no valid data — 34.67-35.96 t/s were UD-IQ2_M 2-bit garbage (vanilla also affected), waiting for Q4 quant (the earlier 10.1 t/s was the official stock binary)
 
 ### 4.2 sched-cache tier matrix (DS-V2-Lite, cache mounted at sched copy layer)
 
@@ -223,11 +223,11 @@ Conclusion: **0.25 is at the ceiling** (16 slots/layer covers all hot experts); 
 
 ### 4.3 Full-GPU vs moe-l2 comparison (DS-V2-Lite Q2_K, selective pin main path)
 
-| Metric | Standard full GPU | moe-l2 (selective pin, 08-10) | Change |
+| Metric | Standard full GPU | moe-l2 (selective pin, 08-14 bins-v0.4.1) | Change |
 |------|-----------|----------------------|------|
-| VRAM usage | 23.3 GB | **1.6-4.9 GB** | **-79%** |
-| Gen speed | 65 t/s | **145.63 t/s** | 224% (beats full GPU) |
-| Model/VRAM ratio | 0.26× | **3.9×** | +15x |
+| VRAM usage | 23.3 GB | **~10 GB** | **-57%** |
+| Gen speed | 65 t/s | **133.2 t/s** | 205% (beats full GPU) |
+| Model/VRAM ratio | 0.26× | **0.6×** | — |
 
 > Early A3-patch form (experts computed on CPU) data: VRAM 23.3 → 1.2 GiB (-95%), Gen 13.8 → 8.6 t/s, Prompt 23.4 → 18.5 — VRAM compression achieved but with a large speed loss. After the 2026-08-02 host buffer upgrade, speed went from 8.6 to 37.5 t/s (+335%) while VRAM stayed at 1.6 GB. Comparing the two paths shows: **VRAM compression comes from "experts on CPU", speed recovery comes from "experts computed directly on GPU"** — both are indispensable.
 
@@ -249,7 +249,9 @@ All 30 combinations passed with zero crashes. The A3 GPU LRU cache runs stably a
 | RTX 3060 12GB / 4060 Ti | 12 GB | larger MoE (target 50B+) |
 | RTX 4070 / 4090 | 16-24 GB | everything; large cache can be enabled |
 
-The 8 GB card is the core target: previously it could only run 7B dense models; with moe-l2 it runs 32B MoE.
+The 10-11 GB card is the core target: previously it could only run 7B-class dense models; with moe-l2 it runs 32B MoE.
+
+> ⚠️ **2026-08-14 correction**: this matrix was built on the P0-era VRAM figures (1.6-3.4 GB), which were garbage-inflated and are void. Fixed-build (bins-v0.4.1) VRAM: DS-V2-Lite ~10 GB, Qwen3.6-A3B ~9.3 GB — the 4-8 GB card compatibility claims above are no longer valid and are under re-assessment.
 
 ### 4.6 Prediction accuracy measurements
 
@@ -269,9 +271,9 @@ The 8 GB card is the core target: previously it could only run 7B dense models; 
 
 | Dimension | Full GPU | moe-l2 | Implication |
 |------|--------|--------|---------|
-| VRAM | 23.3 GB | 1.6-4.9 GB | 8 GB cards can run it; VRAM is the hard constraint |
-| Speed | 65 t/s | 145.63 t/s (DS, 08-10) | beats full GPU, far beyond the fluidity threshold |
-| Hardware cost | 24 GB card (8000+ RMB) | 4-8 GB card (500-2000 RMB) | cost drops an order of magnitude |
+| VRAM | 23.3 GB | ~9.3-10 GB | 10-11 GB cards can run it; VRAM is the hard constraint |
+| Speed | 65 t/s | 133.2 t/s (DS, 08-14, bins-v0.4.1) | beats full GPU, far beyond the fluidity threshold |
+| Hardware cost | 24 GB card (8000+ RMB) | 10-11 GB card | cost drops significantly |
 
 ### 5.2 vs Palm-Infra / mollm (Tencent, official data)
 
@@ -291,12 +293,12 @@ mollm is the MoE inference engine open-sourced by Tencent's YouTu Palm team: App
 | Platform | Apple Silicon / ARM Linux | **Linux x86_64 + NVIDIA GPU** |
 | Expert storage | SSD → RAM | CPU RAM → GPU VRAM |
 | Compute location | CPU (NEON-optimized kernels) | **GPU (cuBLAS)** |
-| Speed (122B-class) | 16.53 t/s @ 20.6 GiB | Qwen3.6-A3B 74.99 t/s @ 3.1 GiB (08-10) |
+| Speed (122B-class) | 16.53 t/s @ 20.6 GiB | Qwen3.6-A3B 44-48 t/s @ ~9.3 GB (08-14, bins-v0.4.1) |
 | Installation | source compile (CMake + C++) | **pip install** |
 | Model support | Qwen series | **any llama.cpp MoE** (DeepSeek/Qwen/Mixtral) |
 | Target users | mobile / edge | **desktop / home servers** |
 
-**Insight**: two teams independently validated the "expert offload + LRU cache + prefetch" route. mollm runs a 122B model with a 1 GB cache + 5.9 GiB total memory (12.38 t/s); moe-l2 runs a 16B MoE in 1.6-4.9 GB VRAM (145.63 t/s, 08-10) — both prove **consumer hardware can run large MoE models** on their respective platforms.
+**Insight**: two teams independently validated the "expert offload + LRU cache + prefetch" route. mollm runs a 122B model with a 1 GB cache + 5.9 GiB total memory (12.38 t/s); moe-l2 runs a 16B MoE in ~10 GB VRAM (133.2 t/s, 08-14) — both prove **consumer hardware can run large MoE models** on their respective platforms.
 
 ### 5.3 Relationship with the ecosystem
 

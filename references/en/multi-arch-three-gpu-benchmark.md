@@ -1,44 +1,44 @@
-# Multi-Architecture Three-GPU Verification Report (bins-v0.2.0) — 2026-08-03 (re-test updated 2026-08-10)
+# Multi-Architecture Three-GPU Verification Report (bins-v0.2.0) — 2026-08-03 (re-test updated 2026-08-14)
 
-## 2026-08-10 Re-test: 2080 Ti Full Pipeline (bins-v0.4.0 / selective pin)
+## 2026-08-14 Re-test: 2080 Ti Full Pipeline (bins-v0.4.1 fixed build / selective pin)
 
-> Re-tested both models with the bins-v0.4.0 multi-arch binaries + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 2080 Ti (region-42 cloud instance). **The 2080 Ti rows are fully refreshed** (stock llama.cpp binary → moe-l2 optimized multi-arch binary):
+> Re-tested both models with the bins-v0.4.1 fixed-build multi-arch binaries + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 2080 Ti (region-42 cloud instance). **The 2080 Ti rows are fully refreshed** (stock llama.cpp binary → moe-l2 optimized multi-arch binary; P0 cache-race fixed 2026-08-13 — the old 08-10 bins-v0.4.0 numbers were garbage-output inflated and are void):
 
-| Model | Old (08-03, stock binary) | New (08-10, full pipeline selective pin) | Improvement |
+| Model | Old (08-03, stock binary) | New (08-14, full pipeline selective pin) | Improvement |
 |------|------------------------|-----------------------------------|------|
-| DS-V2-Lite (Q2_K) | 6.89 t/s | **87.25 t/s** (follow-up 1, round 3) | +1166% |
-| Qwen3.6-35B-A3B (UD-IQ2_M) | 11.15 t/s | **47.24 t/s** (follow-up 1, round 3) | +324% |
+| DS-V2-Lite (Q2_K) | 6.89 t/s | **85.25 t/s** (2026-08-14, bins-v0.4.1 fixed build) | +1137% |
+| Qwen3.6-35B-A3B (UD-IQ2_M) | 11.15 t/s | **30.87 t/s (locked)** (2026-08-14, bins-v0.4.1 fixed build) | +177% |
 
-- Full 4-round data in [qwen3.6-a3b-iq2m-benchmark.md](qwen3.6-a3b-iq2m-benchmark.md) / [deepseek-v2-lite-q2k-benchmark.md](deepseek-v2-lite-q2k-benchmark.md) (2026-08-10 sections)
-- Conclusion: the previous 6.89/11.15 on the 2080 Ti were the **official stock llama.cpp binary** (sm_75 single-arch, no moe-l2 optimizations); the moe-l2 optimized multi-arch binary unleashes real performance on the 2080 Ti, DS +1166%, Qwen +324%
+- Full 4-round data in [qwen3.6-a3b-iq2m-benchmark.md](qwen3.6-a3b-iq2m-benchmark.md) / [deepseek-v2-lite-q2k-benchmark.md](deepseek-v2-lite-q2k-benchmark.md) (2026-08-10 sections — ⚠️ those 08-10 bins-v0.4.0 numbers are P0-void, 2026-08-13 voided)
+- Conclusion: the previous 6.89/11.15 on the 2080 Ti were the **official stock llama.cpp binary** (sm_75 single-arch, no moe-l2 optimizations); the moe-l2 optimized multi-arch binary unleashes real performance on the 2080 Ti (2026-08-14 bins-v0.4.1 fixed build), DS +1137%, Qwen +177% (2080 Ti VRAM TBD)
 - The 08-03 data below is kept as historical baseline (bins-v0.2.0 / host-buffer main path / stock binary)
 
-## 2026-08-10 Addition: RTX 5090 Full Pipeline Measurement (bins-v0.4.0 / selective pin)
+## 2026-08-10 Addition: RTX 5090 Full Pipeline Measurement (bins-v0.4.0 / selective pin) — ⚠️ P0-void, pending re-measure
 
-> Measured both models with the bins-v0.4.0 multi-arch binaries + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 5090 (bjb2 cloud instance, round 3 stable round):
+> Measured both models with the bins-v0.4.0 multi-arch binaries + full pipeline (`moe-l2 start --gpu`, selective pin router table top-100) on RTX 5090 (bjb2 cloud instance, round 3 stable round): ⚠️ **P0-void, pending re-measure** — pre-fix build; cache false hits produced garbage output at inflated speeds; no fixed-build (bins-v0.4.1) 5090 data yet.
 
 | Model | Old (08-03, stock binary) | New (08-10, full pipeline selective pin) | Improvement |
 |------|------------------------|-----------------------------------|------|
-| DS-V2-Lite (Q2_K) | 16.63 t/s | **135.57 t/s** (follow-up 1, round 3) | +715% |
-| Qwen3.6-35B-A3B (UD-IQ2_M) | 9.71 t/s | **76.41 t/s** (follow-up 1, round 3) | +687% |
+| DS-V2-Lite (Q2_K) | 16.63 t/s | ⚠️ **P0-void, pending re-measure** | — |
+| Qwen3.6-35B-A3B (UD-IQ2_M) | 9.71 t/s | ⚠️ **P0-void, pending re-measure** | — |
 
-- DS full rounds: round 1 49.69/22.54/115.84 → round 2 118.57/133.78/135.76 → round 3 **118.53/135.57/152.88** → round 4 122.98/139.60/137.10 (short conversation/follow-up 1/follow-up 2)
-- Qwen full rounds: round 1 14.59/58.66/55.93 → round 2 61.44/78.40/68.85 → round 3 **66.44/76.41/69.86** → round 4 66.78/76.45/68.19
-- Conclusion: the moe-l2 optimized build unleashes real performance on the 5090 (sm_120a), DS +715%, Qwen +687%; the 5090's Blackwell architecture performs impressively under moe-l2 optimization (DS 135.57 t/s beats the 4090's old baseline of 39.0)
+- DS full rounds (⚠️ P0-void, 2026-08-13 voided — pre-fix build): round 1 49.69/22.54/115.84 → round 2 118.57/133.78/135.76 → round 3 **118.53/135.57/152.88** → round 4 122.98/139.60/137.10 (short conversation/follow-up 1/follow-up 2)
+- Qwen full rounds (⚠️ P0-void, 2026-08-13 voided — pre-fix build): round 1 14.59/58.66/55.93 → round 2 61.44/78.40/68.85 → round 3 **66.44/76.41/69.86** → round 4 66.78/76.45/68.19
+- ⚠️ Conclusion voided: the 135.57/76.41 figures were P0-garbage-output inflated; no fixed-build 5090 measurement yet — **pending re-measure**
 
-## 2026-08-10 Addition: RTX 4090 Full Pipeline Measurement (bins-v0.4.0 fixed build / selective pin)
+## 2026-08-14 Addition: RTX 4090 Full Pipeline Measurement (bins-v0.4.1 fixed build / selective pin)
 
-> Measured with the bins-v0.4.0 fixed build (downloaded from the GitHub release, includes libmtmd/libllama) on RTX 4090 (bjb1 cloud instance, round 3 stable round), collecting VRAM/memory at the same time:
+> Measured with the bins-v0.4.1 fixed build (P0 cache-race fixed 2026-08-13; the old 08-10 bins-v0.4.0 numbers were garbage-output inflated and are void) on RTX 4090 (bjb1 cloud instance), collecting VRAM/memory at the same time:
 
-| Model | Old (08-02 single-arch baseline) | New (08-10, full pipeline selective pin) | Improvement | VRAM | RSS |
+| Model | Old (08-02 single-arch baseline) | New (08-14, full pipeline selective pin) | Improvement | VRAM | RSS |
 |------|------------------------|-----------------------------------|------|------|-----|
-| DS-V2-Lite (Q2_K) | 37.5 t/s | **145.63 t/s** (follow-up 1, round 3) | +288% | 4.9 GB | 2.1 GB |
-| Qwen3.6-35B-A3B (UD-IQ2_M) | 46.8 t/s | **74.99 t/s** (follow-up 1, round 3) | +60% | 3.1 GB | 2.3 GB |
+| DS-V2-Lite (Q2_K) | 37.5 t/s | **133.2 t/s** (2026-08-14, bins-v0.4.1; re-measure 124-130) | +251% | ~10 GB | ~6.7 GB |
+| Qwen3.6-35B-A3B (UD-IQ2_M) | 46.8 t/s | **44-48 t/s** (2026-08-14, bins-v0.4.1; re-measure 36-46) | — | ~9.3 GB | ~11.4 GB |
 
-- DS full rounds: round 1 45.40/102.67/115.72 → round 2 132.27/140.23/123.64 → round 3 **134.05/145.63/127.95** → round 4 135.04/140.31/134.47
-- Qwen full rounds: round 1 36.85/47.01/51.52 → round 2 57.78/71.93/62.49 → round 3 **65.08/74.99/63.71** → round 4 64.32/73.54/63.38
-- VRAM sampling: DS peak 5065 MiB / Qwen peak 3199 MiB (-c 8192 including KV cache); RSS is for the single llama-server process
-- Conclusion: the 4090 (sm_89 Ada) kernel optimizations are the most mature — DS 145.63 t/s beats the 5090 (135.57); Qwen 74.99 t/s is on par with the 5090 (76.41); VRAM usage of 3.1-4.9GB easily fits in an 8GB card
+- DS full rounds (⚠️ 08-10 bins-v0.4.0 numbers — P0-void, 2026-08-13 voided): round 1 45.40/102.67/115.72 → round 2 132.27/140.23/123.64 → round 3 **134.05/145.63/127.95** → round 4 135.04/140.31/134.47
+- Qwen full rounds (⚠️ 08-10 bins-v0.4.0 numbers — P0-void, 2026-08-13 voided): round 1 36.85/47.01/51.52 → round 2 57.78/71.93/62.49 → round 3 **65.08/74.99/63.71** → round 4 64.32/73.54/63.38
+- VRAM sampling (⚠️ P0-era bins-v0.4.0, voided 2026-08-13): DS peak 5065 MiB / Qwen peak 3199 MiB (-c 8192 including KV cache); 2026-08-14 bins-v0.4.1 fixed build: DS ~10 GB VRAM / ~6.7 GB RSS, Qwen ~9.3 GB VRAM / ~11.4 GB RSS
+- Conclusion (2026-08-14 bins-v0.4.1 fixed build): the 4090 (sm_89 Ada) kernel optimizations are the most mature — DS 133.2 t/s, Qwen 44-48 t/s; the 5090 figures (135.57/76.41) are P0-void pending re-measure; fixed-build VRAM usage ~9.3-10 GB fits comfortably on 10-11 GB cards
 
 ---
 

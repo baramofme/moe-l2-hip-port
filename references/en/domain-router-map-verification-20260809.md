@@ -167,6 +167,8 @@ Using the V4 real trace (311,363 EXPERT rows, 125 requests), generate an aggrega
 
 ## Selective pin real-machine verification (2026-08-10 afternoon, full-pipeline A/B on 4090 cloud machine)
 
+> ⚠️ **2026-08-13 correction: the V4 speed figures in this section (30.9 t/s etc.) carry no valid speed meaning — UD-IQ2_M 2-bit quantization degrades to garbage output (vanilla also affected); no valid speed data, waiting for Q4 quant. The RSS/memory conclusions (84.4 → 10.4 GB) stand.**
+
 ### Implementation (Phase 1: RAM selective pin)
 - C++: ggml-backend.cpp copy_experts adds `MOE_L2_ROUTER_FILE` env var support — reads the router table at load time (`layer expert1 expert2 ...` format), calls pin_fn only for in-table experts; out-of-table experts are not explicitly registered and go through set_tensor_async's on-demand fallback
 - Python: cli.py adds `--router-map` / `--router-top-k` args; auto-generates the router map at startup and injects it into env
@@ -181,9 +183,9 @@ Using the V4 real trace (311,363 EXPERT rows, 125 requests), generate an aggrega
 | B: whole-pin (control) | 84.4 GB | 24.45 | 31.23 | 30.21 | **30.2 t/s** |
 
 ### Key conclusions
-1. **RSS 84.4 → 10.4GB (↓ 88%)**, zero speed penalty (30.9 vs 30.2 t/s, within ±2% noise) — "fewer pinned experts → lower memory, no speed loss" verified on real hardware
+1. **RSS 84.4 → 10.4GB (↓ 88%)**, memory reduction without speed loss — ⚠️ the 30.9 vs 30.2 t/s speeds are **no valid speed data** (UD-IQ2_M 2-bit quantization degrades to garbage output, vanilla also affected; waiting for Q4 quant) — "fewer pinned experts → lower memory" verified on real hardware
 2. **Faster startup**: selective pin ready in 10s vs whole-pin 40s (no full-page faulting)
-3. **⚠️ The 30 t/s speed comes from the "recompiled build-a3 binary", not from selective pin** — the previous v031-test (f1b5e048) measured 10.1 t/s; after recompiling from llama.cpp-clean source today, both A/B groups hit 30 t/s. Selective pin's contribution = 88% memory reduction without slowing speed
+3. **⚠️ The 30 t/s speed comes from the "recompiled build-a3 binary", not from selective pin** — the previous v031-test (f1b5e048) measured 10.1 t/s; after recompiling from llama.cpp-clean source today, both A/B groups hit 30 t/s. Selective pin's contribution = 88% memory reduction without slowing speed（⚠️ the 30 t/s figures are UD-IQ2_M 2-bit-garbage-era measurements — no valid speed data, waiting for Q4 quant; the RSS reduction conclusion stands）
 4. **Out-of-table residency accumulation observed**: after 3 speed rounds, RSS grew from 10.4 to 19.7GB (out-of-table experts stay resident after on-demand pin, never evicted) — matches the design; long-running operation needs waterline eviction (implementation item of risk #2 in the plan doc)
 5. vs simulation: measured RSS 10.4GB is slightly better than the simulated 12.9GB (union 61/layer < simulated assumption 80/layer); speed cannot be directly compared due to the binary update
 
@@ -209,7 +211,7 @@ Using the V4 real trace (311,363 EXPERT rows, 125 requests), generate an aggrega
 4. **New round1 bottleneck analysis**: prefill takes effect (RSS 10.4→28.2GB, VRAM 17.7GB, 61 experts/layer × 43 layers all H2D into cache), but round1 is still ~19.7 → the bottleneck is that **prefill H2D happens within the first request** (lazily triggered), so the first request overlaps the bulk H2D. True "first-request-at-full-speed" requires prefill to complete at **startup** (after model load, before the first request)
 5. **Note**: llama-server stderr is consumed by the gate thread; `[moe-l2] prefill` logs don't hit disk (the round1 improvement is the evidence it took effect)
 
-## 2080Ti dual-model full-pipeline verification (2026-08-10 evening, region-42, new multi-arch binary)
+## 2080Ti dual-model full-pipeline verification (2026-08-10 evening, region-42, new multi-arch binary) — ⚠️ P0-void (2026-08-13)
 
 **Background**: region-42's old bin only had sm_75 single arch + 0 moe-l2 markers (= stock compile); the new multi-arch (llama-final-src/build-multi) has sm_61/75/86/89/120a + all moe-l2 optimizations. Full pipeline = moe-l2 start --gpu (proxy + L2 cache + flywheel gate + selective pin).
 
@@ -223,7 +225,7 @@ Using the V4 real trace (311,363 EXPERT rows, 125 requests), generate an aggrega
 | round2 | 16.88 t/s | **50.80 t/s** | +201% |
 | round3 | 15.86 t/s | **52.07 t/s** | +228% |
 
-> 📌 **2026-08-10 evening re-measurement** (same machine, same binary, stable round3): Qwen **47.24 t/s**, DS **87.25 t/s** (see qwen3.6-a3b-iq2m-benchmark.md / deepseek-v2-lite-q2k-benchmark.md 08-10 sections). The table above is the first full-pipeline verification data; both are real measurements, the variance is normal; README/models-benchmark adopt the re-measured values.
+> 📌 **2026-08-10 evening re-measurement** (same machine, same binary, stable round3): Qwen **47.24 t/s**, DS **87.25 t/s** — ⚠️ **P0-void, 2026-08-13 voided** (pre-fix build, garbage-output inflated; the linked 08-10 sections are likewise void). **2026-08-14 bins-v0.4.1 fixed-build re-measure: Qwen 30.87 t/s, DS 85.25 t/s** (see multi-arch-three-gpu-benchmark.md); README/models-benchmark adopt the fixed-build values. The table above is the first full-pipeline verification data (historical record).
 
 ### DS-V2-Lite (Q2_K, codegen 128 tokens)
 
@@ -241,10 +243,10 @@ Using the V4 real trace (311,363 EXPERT rows, 125 requests), generate an aggrega
 
 ### Conclusions
 
-1. **moe-l2-optimized multi-arch binary on 2080Ti: Qwen ~3.5x, DS ~14x gains** — consistent with the 3x gain on V4/4090; all models 3x+
+1. **moe-l2-optimized multi-arch binary on 2080Ti: Qwen ~3.5x, DS ~14x gains**（⚠️ P0-void, 2026-08-13 voided — pre-fix build; fixed-build 2080 Ti values: Qwen 30.87 / DS 85.25, see multi-arch-three-gpu-benchmark.md）— consistent with the 3x gain on V4/4090; all models 3x+
 2. **Root cause**: all the previous "slow" benchmark data (14.9/6.9 t/s) came from stock/old-compiled binaries; moe-l2's real performance was buried
 3. Router map auto-generation (43 layers top-100) + flywheel domain prediction (routing drift detection) work across the full pipeline
-4. **Release benchmarks updated**: Qwen ≈ 52 t/s on 2080Ti, DS ≈ 95 t/s, V4 ≈ 30.9 t/s on 4090
+4. **Release benchmarks updated**（⚠️ all P0-void, 2026-08-13 voided — pre-fix build）: Qwen ≈ 52 t/s on 2080Ti, DS ≈ 95 t/s, V4 ≈ 30.9 t/s on 4090（V4: UD-IQ2_M 2-bit garbage — no valid speed data, waiting for Q4 quant; fixed-build 2080 Ti values: Qwen 30.87 / DS 85.25, see multi-arch-three-gpu-benchmark.md）
 
 ## Next steps
 
