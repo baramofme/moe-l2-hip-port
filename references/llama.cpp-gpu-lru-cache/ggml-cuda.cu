@@ -1,4 +1,11 @@
 #include <functional>
+#include <mutex>
+#include <unordered_set>
+#include <vector>
+#include <utility>
+#include <unistd.h>
+#include <sys/mman.h>
+static size_t g_total_pinned_bytes = 0;
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
@@ -1878,6 +1885,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
 
 // [moe-l2 A3 fix] Returns true when the expert tensor's data physically lives in
 // CPU RAM (mmap'd host memory) rather than GPU VRAM. Gates the A3 per-expert
+// [moe-l2 on-demand pin 2026-08-07 v2] forward declaration (definition near the
+// backend registration table at the end of this file).
+bool ggml_cuda_expert_pin_host(const void * ptr, size_t nbytes);
+
 // H2D + cache pipeline: it only makes sense when experts are truly on the host.
 // With --no-mmap experts are fully in VRAM, so forcing the A3 pipeline then is
 // pure overhead (the slow generic MUL_MAT_ID path, ~3ms fixed cost).
@@ -1921,6 +1932,13 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             }
         }
     }
+    // [moe-l2 dynamic pin set 2026-08-09] REMOVED whole-tensor pin here.
+    // The old code registered the ENTIRE expert tensor (82GB on V4) before the
+    // A3 slow pipeline could read any host expert — cudaHostRegister faults and
+    // pins every page (RssAnon 82GB) and eviction had to unregister everything.
+    // Per-expert pinning happens in ggml_cuda_set_tensor_async (per-copy-source
+    // pin) and in the scheduler's copy_experts; the A3 slow pipeline reads only
+    // the experts it copies through those same paths, so no whole-pin needed.
     static long long mmid_tot_us = 0;
     static int       mmid_cnt    = 0;
     struct MmIdTimer {
@@ -2701,12 +2719,85 @@ static void ggml_backend_cuda_free(ggml_backend_t backend) {
 }
 
 static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    // [moe-l2 on-demand pin 2026-08-07] The host source of an async H2D copy
+    // must be pinned. When expert mmap pages become writable (mprotect in
+    // ggml_cuda_expert_pin_host), llama.cpp may route expert loading through
+    // this path with the raw mmap page as source -> pin it before the copy.
+    if (data && (!getenv("MOEL2_NOPIN2") || !getenv("MOEL2_NOPIN2")[0])) {
+        ggml_cuda_expert_pin_host(data, size);
+    }
+    uintptr_t src_pg = (uintptr_t)data & ~(uintptr_t)(4096 - 1);
+    (void)data; (void)offset; (void)size;
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+    cudaError_t ec = cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream());
+    if (ec != cudaSuccess) {
+        void * ctrl = nullptr;
+        cudaError_t e2 = cudaMalloc(&ctrl, size);
+        cudaError_t s1 = cudaMemcpy(ctrl, data, size, cudaMemcpyHostToDevice);
+        cudaStream_t ns = nullptr; cudaStreamCreate(&ns);
+        cudaError_t s2 = cudaMemcpyAsync(ctrl, data, size, cudaMemcpyHostToDevice, ns);
+        cudaStreamSynchronize(ns); cudaStreamDestroy(ns);
+        void * ctrl2 = malloc(size ? size : 1);
+        memset(ctrl2, 0, size ? size : 1);
+        cudaError_t s3 = cudaMemcpyAsync(ctrl, ctrl2, size, cudaMemcpyHostToDevice, cuda_ctx->stream());
+        uintptr_t spg = (uintptr_t)data & ~(uintptr_t)(4096-1);
+        {
+            FILE * mf = fopen("/proc/self/maps", "r");
+            char line[512];
+            uintptr_t src_addr = (uintptr_t) data;
+            if (mf) {
+                while (fgets(line, sizeof(line), mf)) {
+                    uintptr_t a = 0, b = 0;
+                    char perm[8] = {0};
+                    if (sscanf(line, "%lx-%lx %7s", &a, &b, perm) == 3) {
+                        if (src_addr >= a && src_addr < b) {
+                            fprintf(stderr, "[VMA] src=%p in [0x%lx,0x%lx) perm=%s line=%s", data, a, b, perm, line);
+                            break;
+                        }
+                    }
+                }
+                fclose(mf);
+            }
+        }
+        {
+            size_t npages = (size + 4095) / 4096;
+            std::vector<unsigned char> mvec2(npages);
+            int mrc2 = mincore((void *) src_pg, npages * 4096, mvec2.data());
+            size_t unres = 0, resident = 0;
+            for (size_t i = 0; i < npages; i++) {
+                if (mrc2 == 0 && (mvec2[i] & 1)) resident++; else unres++;
+            }
+            fprintf(stderr, "[MNCALL] npages=%zu resident=%zu unres=%zu mrc2=%d\n", npages, resident, unres, mrc2);
+        }
+        cudaError_t ur = cudaHostUnregister((void *) spg);
+        cudaError_t s4 = cudaMemcpyAsync(ctrl, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream());
+        cudaPointerAttributes fpa;
+        cudaError_t fpe = cudaPointerGetAttributes(&fpa, (void *) data);
+        fprintf(stderr, "[FPA] err=%d type=%d host=%p dev=%p\n", (int) fpe,
+                fpe == cudaSuccess ? (int)fpa.type : -1, fpa.hostPointer, fpa.devicePointer);
+        cudaError_t ur3 = cudaErrorUnknown;
+        cudaError_t s6 = cudaErrorUnknown;
+        if (fpe == cudaSuccess && fpa.hostPointer) {
+            ur3 = cudaHostUnregister(fpa.hostPointer);
+            s6 = (ur3 == cudaSuccess) ? cudaMemcpyAsync(ctrl, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()) : ur3;
+            fprintf(stderr, "[UNREG2] host=%p ur3=%d(%s) copy6=%d(%s)\n", fpa.hostPointer,
+                    (int) ur3, cudaGetErrorString(ur3), (int) s6, cudaGetErrorString(s6));
+        }
+        cudaError_t rr = cudaHostRegister((void *) spg, 4096, cudaHostRegisterMapped);
+        cudaError_t s5 = (rr == cudaSuccess) ? cudaMemcpyAsync(ctrl, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()) : rr;
+        fprintf(stderr, "[DIAG] total_pinned=%zu re_register=%d(%s) recopy_after_rereg=%d(%s) sync=%d(%s) newstream=%d(%s) malloc_src=%d(%s) unreg=%d(%s) recopy_after_unreg=%d(%s)\n",
+                g_total_pinned_bytes, (int) rr, cudaGetErrorString(rr), (int) s5, cudaGetErrorString(s5),
+                (int) s1, cudaGetErrorString(s1), (int) s2, cudaGetErrorString(s2),
+                (int) s3, cudaGetErrorString(s3), (int) ur, cudaGetErrorString(ur),
+                (int) s4, cudaGetErrorString(s4));
+        free(ctrl2);
+        if (ctrl) cudaFree(ctrl);
+    }
+    CUDA_CHECK(ec);
 }
 
 static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
@@ -5602,6 +5693,160 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+// [moe-l2 layered pin 2026-08-08] shared registry between pin/unpin.
+static std::mutex g_pin_mtx;
+static std::vector<std::pair<uintptr_t, uintptr_t>> g_pinned_ranges; // [start, end) actually registered
+
+// [moe-l2 on-demand pin 2026-08-07 v2] Pin a host (mmap) page range as pinned
+// memory the first time it is touched, so GPU kernels / DMA copies can access
+// it without staged copies. Called from ggml-backend.cpp copy_experts (before
+// the CPU->GPU expert copy) and from ggml_cuda_mul_mat_id (A3 slow pipeline).
+//
+// v2 fix: the scheduler copies consecutive experts whose page ranges OVERLAP
+// (padding / adjacent experts sharing a page). cudaHostRegister on an already
+// registered range returns cudaErrorInvalidValue, which previously aborted the
+// whole pin. We now keep a sorted list of registered [start,end) page ranges
+// and register only the not-yet-covered segments.
+bool ggml_cuda_expert_pin_host(const void * ptr, size_t nbytes) {
+    if (ptr == nullptr || nbytes == 0) {
+        return true;
+    }
+    const size_t ps = getpagesize();
+    uintptr_t addr  = (uintptr_t)ptr;
+    uintptr_t start = addr & ~(uintptr_t)(ps - 1);
+    uintptr_t end   = (addr + nbytes + ps - 1) & ~(uintptr_t)(ps - 1);
+    if (end <= start) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lk(g_pin_mtx);
+
+    // 1. find OVERLAPPING registered ranges only. Two ranges that merely touch
+    //    (r.second == start or r.first == end) are NOT merged — merging adjacent
+    //    ranges made the pinned chain grow without bound (whole tensor), so
+    //    eviction of one expert unregistered a huge range and the next touch
+    //    re-registered (and re-faulted) everything: the 93s/turn storm. Overlap
+    //    (shared page between adjacent experts) is unavoidable and still merged.
+    std::vector<std::pair<uintptr_t, uintptr_t>> overlapped;
+    uintptr_t mstart = start, mend = end;
+    for (auto & r : g_pinned_ranges) {
+        if (r.second <= start) continue;   // strictly before (or adjacent)
+        if (r.first >= end) continue;      // strictly after (or adjacent)
+        overlapped.push_back(r);
+        mstart = std::min(mstart, r.first);
+        mend   = std::max(mend,   r.second);
+    }
+
+    // 2. fast path: [start, end) fully covered by one registered range
+    for (auto & r : overlapped) {
+        if (r.first <= start && end <= r.second) {
+            return true;
+        }
+    }
+
+    // 3. unregister the ranges being merged (must use each range's start)
+    for (auto & r : overlapped) {
+        cudaError_t ue = cudaHostUnregister((void *) r.first);
+        if (ue != cudaSuccess) {
+            (void)cudaGetLastError();
+            if (0) fprintf(stderr, "[PIN] unreg FAIL\n");
+        }
+    }
+
+    // 4. make the whole merged range writable (MAP_PRIVATE COW is fine)
+    if (mprotect((void *) mstart, mend - mstart, PROT_READ | PROT_WRITE) != 0) {
+        if (0) fprintf(stderr, "[PIN] mprotect FAIL\n");
+    }
+
+    // 5. register the merged single range
+    unsigned reg_flags = (getenv("MOEL2_NOMAPPED") && getenv("MOEL2_NOMAPPED")[0]) ? 0u : (unsigned)cudaHostRegisterMapped;
+    cudaError_t ce = (getenv("MOEL2_NOREG") && getenv("MOEL2_NOREG")[0]) ? cudaSuccess : cudaHostRegister((void *) mstart, mend - mstart, reg_flags);
+    if (ce == cudaSuccess) {
+        
+        g_total_pinned_bytes += (size_t)(mend - mstart);
+    } else {
+        (void)cudaGetLastError();
+        if (0) fprintf(stderr, "[PIN] FAIL\n");
+    }
+
+    // 6. update the registry: drop merged ranges, add the merged range
+    std::vector<std::pair<uintptr_t, uintptr_t>> nregs;
+    for (auto & r : g_pinned_ranges) {
+        bool merged_away = false;
+        for (auto & o : overlapped) {
+            if (o.first == r.first && o.second == r.second) { merged_away = true; break; }
+        }
+        if (!merged_away) {
+            nregs.push_back(r);
+        }
+    }
+    nregs.emplace_back(mstart, mend);
+    g_pinned_ranges.swap(nregs);
+    return true;
+}
+
+// [moe-l2 dynamic pin set 2026-08-09 v2] Unpin a previously registered expert range.
+// When the LRU evictor decides an expert is cold, we must cudaHostUnregister
+// BEFORE madvise(DONTNEED) — a registered (pinned) page cannot be returned to
+// the kernel by madvise, so the physical memory would stay resident forever.
+// NOTE (critical): cudaHostUnregister requires the ORIGINAL registration start
+// address. Per-expert pinning may have merged an expert's range with its
+// overlapping neighbours (shared page) into one chain [s,t); we unregister the
+// WHOLE chain and drop it. v1 tried to re-register the remaining segments
+// [s,start)/[end,t) to keep hot neighbours pinned — that SPLIT ranges and blew
+// up g_pinned_ranges (tens of thousands of fragments after repeated eviction),
+// making every pin scan O(n) and re-register storms: 378us/pin, ~5x slowdown.
+// No re-registration is needed: copy_experts pins per-expert anyway, so a hot
+// neighbour's next access registers its OWN range (which does not include the
+// evicted expert's pages) — no re-fault of evicted pages, no fragmentation.
+bool ggml_cuda_expert_unpin_host(const void * ptr, size_t nbytes) {
+    if (ptr == nullptr || nbytes == 0) {
+        return true;
+    }
+    const size_t ps = getpagesize();
+    uintptr_t addr  = (uintptr_t)ptr;
+    uintptr_t start = addr & ~(uintptr_t)(ps - 1);
+    uintptr_t end   = (addr + nbytes + ps - 1) & ~(uintptr_t)(ps - 1);
+    if (end <= start) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lk(g_pin_mtx);
+
+    // find a registered range that overlaps [start, end); unregister it whole
+    // (using its ORIGINAL start address) and drop it from the registry.
+    std::vector<std::pair<uintptr_t, uintptr_t>> keep;
+    bool unreg_done = false;
+    for (auto & r : g_pinned_ranges) {
+        if (r.second <= start || r.first >= end) {
+            keep.push_back(r);
+            continue;
+        }
+        // overlapping registered range — unregister the WHOLE range (chain)
+        cudaError_t ue = cudaHostUnregister((void *) r.first);
+        if (ue != cudaSuccess) {
+            (void)cudaGetLastError();
+            if (0) fprintf(stderr, "[UNPIN] unreg FAIL start=%p len=%zu\n", (void *) r.first, r.second - r.first);
+        }
+        unreg_done = true;
+        // NOTE: chain dropped from registry; per-expert pinning re-registers
+        // only the experts actually accessed next (their own ranges), so the
+        // evicted pages stay unregistered and madvise can free them.
+    }
+    g_pinned_ranges.swap(keep);
+    (void)unreg_done;
+    return true;
+}
+
+// [moe-l2 P0 fix v2 2026-08-13] Return the CUDA backend's compute stream.
+// The scheduler's copy_experts queries this via proc-address so cache D2D
+// copies run on the same stream that fills the input-copy buffer.
+static void * ggml_cuda_get_backend_stream(ggml_backend_t backend) {
+    if (!backend) {
+        return nullptr;
+    }
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    return (void *)cuda_ctx->stream();
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
@@ -5627,6 +5872,28 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_cuda_expert_cache_set") == 0) {
         return (void *)ggml_cuda_expert_cache_set;
+    }
+    // [moe-l2 P0 fix v2 2026-08-13] expose the CUDA backend's compute stream
+    // so the scheduler's copy_experts can run cache D2D copies on the SAME
+    // stream that fills the input-copy buffer (ordering without blocking).
+    // P0 root cause was the cache copy using the default stream (nullptr)
+    // while the source buffer was filled async on split_backend's stream —
+    // no ordering → garbage in cache slots. v1 fix used sync memcpy (slow,
+    // serializes every miss); v2 passes the correct stream instead.
+    if (strcmp(name, "ggml_cuda_get_backend_stream") == 0) {
+        return (void *)ggml_cuda_get_backend_stream;
+    }
+    // [moe-l2 prefill 2026-08-10] expose lazy init so the scheduler can ensure
+    // the cache exists BEFORE its first copy_experts bulk-prefill (otherwise
+    // cache_set on an uninitialized cache silently no-ops and round-1 misses).
+    if (strcmp(name, "ggml_cuda_expert_cache_maybe_init") == 0) {
+        return (void *)ggml_cuda_expert_cache_maybe_init;
+    }
+    if (strcmp(name, "ggml_cuda_expert_pin_host") == 0) {
+        return (void *)ggml_cuda_expert_pin_host;
+    }
+    if (strcmp(name, "ggml_cuda_expert_unpin_host") == 0) {
+        return (void *)ggml_cuda_expert_unpin_host;
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;

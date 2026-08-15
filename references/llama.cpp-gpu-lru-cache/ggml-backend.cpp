@@ -22,6 +22,8 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <unordered_set>
+#include <chrono>
 
 #ifdef __APPLE__
 #include <sys/types.h>
@@ -1621,21 +1623,94 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         prev_ids_tensor = ids_tensor;
                     }
 
+                    // [moe-l2 selective pin 2026-08-10] router map: layer -> set of pinned experts
+                    // loaded once from MOE_L2_ROUTER_FILE (format: "layer expert1 expert2 ..." per line).
+                    // When set, ONLY experts listed in the map get cudaHostRegister'd (DMA fast path);
+                    // unlisted experts stay mmap'd and fault in on-demand via set_tensor_async (slow path).
+                    static std::vector<std::unordered_set<int32_t>> g_router_map;
+                    static bool g_router_loaded = false;
+                    static bool g_router_mode = []() {
+                        const char * env = getenv("MOE_L2_ROUTER_FILE");
+                        return env && env[0] != '\0';
+                    }();
+                    if (g_router_mode && !g_router_loaded) {
+                        g_router_loaded = true;
+                        const char * path = getenv("MOE_L2_ROUTER_FILE");
+                        FILE * rf = fopen(path, "r");
+                        if (!rf) {
+                            fprintf(stderr, "[moe-l2] selective pin: cannot open %s, falling back to whole-pin\n", path);
+                        } else {
+                            char line[8192];
+                            while (fgets(line, sizeof(line), rf)) {
+                                int layer = -1;
+                                char * p = line;
+                                while (*p == ' ' || *p == '\t') p++;
+                                if (*p == '#' || *p == '\n' || *p == '\0') continue;
+                                layer = atoi(p);
+                                if (layer < 0) continue;
+                                while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+                                if ((size_t) layer >= g_router_map.size()) g_router_map.resize(layer + 1);
+                                auto & s = g_router_map[layer];
+                                while (*p) {
+                                    while (*p == ' ' || *p == '\t') p++;
+                                    if (*p == '\n' || *p == '\0') break;
+                                    int e = atoi(p);
+                                    if (e >= 0) s.insert(e);
+                                    while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+                                }
+                            }
+                            fclose(rf);
+                            fprintf(stderr, "[moe-l2] selective pin: loaded %zu layers from %s\n", g_router_map.size(), path);
+                        }
+                    }
+
+                    // [moe-l2 selective pin] layer number of this expert tensor ("blk.<il>.ffn_*_exps.weight" -> il)
+                    auto router_layer_of = [](const ggml_tensor * t) -> int {
+                        const char * nm = ggml_get_name(t);
+                        if (!nm) return -1;
+                        const char * p = strstr(nm, "blk.");
+                        if (!p) return -1;
+                        return atoi(p + 4);
+                    };
+
                     // group consecutive experts and copy them together
                     auto copy_experts = [&](int32_t first_id, int32_t last_id) {
-                        const size_t expert_offset = first_id * expert_size;
-                        const size_t expert_size_copy =  (last_id - first_id + 1) * expert_size;
                         const size_t padding = std::min<size_t>(expert_size, 512);
-                        const size_t padding_end = last_id < n_expert - 1 ? padding : 0;
+
+                        // [moe-l2 dynamic pin set 2026-08-09] per-expert pin +
+                        // per-expert copy. The previous whole-pin path registered
+                        // the WHOLE expert tensor on first touch — cudaHostRegister
+                        // faults and pins every page, so all 82GB of V4 expert
+                        // pages went resident at once (RssAnon 82GB) and eviction
+                        // had to unregister the whole tensor. Per-expert pinning
+                        // registers only the activated expert's own page-aligned
+                        // range (adjacent experts sharing a page still merge into
+                        // a short chain inside pin_fn), and each expert is copied
+                        // with its own async H2D call whose source always lies
+                        // inside a single registered range — this also avoids the
+                        // CUDA 11.8 cross-range copy bug (invalid argument).
+                        // Eviction now unregisters only the expert's own chain
+                        // (1-3 experts), so re-registration is cheap.
+                        static bool (*pin_fn)(const void *, size_t) = nullptr;
+                        static bool pin_resolved = false;
+                        if (!pin_resolved) {
+                            auto * cuda_dev_pin = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+                            if (cuda_dev_pin) {
+                                auto * cuda_reg_pin = ggml_backend_dev_backend_reg(cuda_dev_pin);
+                                pin_fn = (bool (*)(const void *, size_t))
+                                    ggml_backend_reg_get_proc_address(cuda_reg_pin, "ggml_cuda_expert_pin_host");
+                            }
+                            pin_resolved = true;
+                        }
+                        const bool do_pin = pin_fn && (!getenv("MOEL2_NOPIN") || !getenv("MOEL2_NOPIN")[0]);
 
                         // [moe-l2 sched-cache 2026-08-02] Try cache first: hot
                         // experts are copied D2D from the GPU cache instead of
                         // over PCIe from CPU RAM. Key must match ggml-cuda.cu
                         // (tensor name hash ^ expert_idx * 0x9E37...) so the
                         // same cache is shared with the compute path.
-                        // NOTE: cache slots are per-expert; only single-expert
-                        // groups (first_id == last_id) are cacheable. Multi-expert
-                        // groups fall through to the regular CPU copy.
+                        // NOTE: cache slots are per-expert; the per-expert loop
+                        // below makes every activated expert cacheable.
                         // Lazily resolve the cache function via the CUDA backend
                         // proc-address mechanism (no direct CUDA include here).
                         static bool (*cache_copy_fn)(const void *, void *, size_t, size_t, void *) = nullptr;
@@ -1649,43 +1724,258 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             }
                             cache_resolved = true;
                         }
-
-                        const uint64_t name_h = std::hash<std::string>{}(input->name ? input->name : "");
-                        void * dst_gpu = (char *)input_cpy->data + expert_offset;
-                        bool cache_hit = false;
-                        const bool single_expert = (first_id == last_id);
-                        if (single_expert && cache_copy_fn) {
-                            // 单专家：查 cache，命中则数据已 D2D 拷入 dst_gpu
-                            cache_hit = cache_copy_fn(
-                                (const void *)(name_h ^ (uint64_t)first_id * 0x9E3779B97F4A7C15ULL),
-                                dst_gpu, 0, expert_size, nullptr);
+                        static bool (*cache_set_fn)(const void *, size_t, const void *, void *) = nullptr;
+                        static bool cache_set_resolved = false;
+                        if (!cache_set_resolved) {
+                            auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+                            if (cuda_dev) {
+                                auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
+                                cache_set_fn = (bool (*)(const void *, size_t, const void *, void *))
+                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_set");
+                            }
+                            cache_set_resolved = true;
+                        }
+                        // [moe-l2 P0 fix v2 2026-08-13] resolve the CUDA
+                        // backend's compute stream ONCE so cache D2D copies run
+                        // on the SAME stream that fills input_cpy via
+                        // set_tensor_async (ordering without blocking). This
+                        // replaces the v1 sync-memcpy fix which was correct
+                        // but serialized every cache miss.
+                        static void * (*cache_stream_fn)(ggml_backend_t) = nullptr;
+                        static bool cache_stream_resolved = false;
+                        if (!cache_stream_resolved) {
+                            auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+                            if (cuda_dev) {
+                                auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
+                                cache_stream_fn = (void * (*)(ggml_backend_t))
+                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_get_backend_stream");
+                            }
+                            cache_stream_resolved = true;
+                        }
+                        void * cache_stream = cache_stream_fn ? cache_stream_fn(split_backend) : nullptr;
+                        // [moe-l2 P0 fix v2 2026-08-13] NOTE: cache_stream is
+                        // fetched ONCE here (outer scope) only for the prefill
+                        // bulk-copy path below. The per-expert loop RE-FETCHES
+                        // it inside the loop (next to each H2D), because
+                        // cuda_ctx->stream() resolves to stream(device,
+                        // curr_stream_no) and llama.cpp's concurrent-streams
+                        // scheduler rotates curr_stream_no between graph
+                        // nodes — a stale stream would put the cache D2D on a
+                        // different stream than the H2D fill → race (garbage
+                        // output at high hit rate, observed 2026-08-13).
+                        // [moe-l2 prefill 2026-08-10] force the expert cache to
+                        // init BEFORE the bulk prefill below. copy_experts runs
+                        // before the first mul_mat_id (which is where the cache
+                        // lazily initializes), so without this the cache_set
+                        // calls would silently no-op and round-1 stays cold.
+                        static void (*cache_init_fn)(int) = nullptr;
+                        static bool cache_init_resolved = false;
+                        if (!cache_init_resolved) {
+                            auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+                            if (cuda_dev) {
+                                auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
+                                cache_init_fn = (void (*)(int))
+                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_maybe_init");
+                            }
+                            cache_init_resolved = true;
+                        }
+                        if (cache_init_fn && g_router_mode) {
+                            cache_init_fn((int) n_expert);
                         }
 
-                        if (!cache_hit) {
-                            ggml_backend_tensor_set_async(split_backend,
-                                input_cpy,
-                                (const uint8_t *)input->data + expert_offset, expert_offset,
-                                // copy a bit extra at the to ensure there are no NaNs in the padding of the last expert
-                                // this is necessary for MMQ in the CUDA backend
-                                expert_size_copy + padding_end);
+                        const uint64_t name_h = std::hash<std::string>{}(input->name ? input->name : "");
 
-                            // miss (or multi-expert): write back to cache for next token
-                            static bool (*cache_set_fn)(const void *, size_t, const void *, void *) = nullptr;
-                            static bool cache_set_resolved = false;
-                            if (!cache_set_resolved) {
-                                auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-                                if (cuda_dev) {
-                                    auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
-                                    cache_set_fn = (bool (*)(const void *, size_t, const void *, void *))
-                                        ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_set");
+                        // [moe-l2 dynpin v5 2026-08-09] DEFAULT = whole-pin (v0.3.1
+                        // behaviour): register the whole expert tensor on first
+                        // touch — fastest (Qwen 2080Ti ~16 t/s, V4 4090 10.1 t/s)
+                        // at the cost of pinning the whole model in RAM.
+                        // MOE_L2_LRU=1 switches to DYNAMIC pin set (low-memory
+                        // mode): register only the activated experts as
+                        // consecutive groups, and the LRU evictor unregisters +
+                        // madvises cold experts (RSS 84→17-24GB on V4, but
+                        // ~20% slower on Qwen/2080Ti and ~50% on V4/4090 —
+                        // measured 2026-08-09). Measured details: cudaHostRegister
+                        // on a cold expert = ~2.1ms (0.43ms page-lock + ~1.7ms
+                        // read fault); registering a contiguous group once turns
+                        // N random 9MB faults into one sequential read and
+                        // amortizes the page-lock call. The per-expert copies
+                        // then fall inside the single registered range (CUDA 11.8
+                        // cross-range bug avoided), and the set_tensor_async
+                        // fallback pin (per-expert es+padding) hits the fast path.
+                        // Eviction unpins per-expert (unregisters the group range
+                        // it belongs to; group members re-register on next access,
+                        // pages already resident → ~0.43ms, acceptable).
+                        // NOTE: group range = [first_start, last_end + padding);
+                        // it is stable across turns only as a COVER (any expert
+                        // inside is fast-pathed), so grouping changes don't cause
+                        // re-registration storms.
+                        static const bool dynpin = []() {
+                            const char * env = getenv("MOE_L2_LRU");
+                            return env && env[0] == '1';
+                        }();
+                        if (do_pin) {
+                            if (g_router_mode) {
+                                // [moe-l2 selective pin 2026-08-10] pin ONLY the experts
+                                // listed in the router map for this layer. Unlisted experts
+                                // are NOT registered here — their pages stay mmap'd and get
+                                // faulted in on-demand by set_tensor_async below (slow path).
+                                // This keeps RSS at (top-K experts x layers) instead of the
+                                // whole tensor while covering ~94% of activations.
+                                const int il = router_layer_of(input);
+                                if (il >= 0 && (size_t) il < g_router_map.size()) {
+                                    const auto & rset = g_router_map[il];
+                                    if (!rset.empty()) {
+                                        for (int32_t e = first_id; e <= last_id; ++e) {
+                                            if (rset.count(e) > 0) {
+                                                const size_t off = (size_t) e * expert_size;
+                                                const size_t pin_len = (e == n_expert - 1) ? expert_size : expert_size + padding;
+                                                pin_fn((const char *) input->data + off, pin_len);
+                                            }
+                                        }
+                                    }
                                 }
-                                cache_set_resolved = true;
+                            } else if (dynpin) {
+                                const size_t group_experts = (size_t) (last_id - first_id + 1);
+                                const size_t group_len = group_experts * expert_size;
+                                const size_t pin_len = (last_id == n_expert - 1) ? group_len : group_len + padding;
+                                pin_fn((const char *) input->data + (size_t) first_id * expert_size, pin_len);
+                            } else {
+                                // whole-pin: register the entire expert tensor once
+                                // (first call faults+pins everything; later calls
+                                // hit pin_fn's fast path).
+                                pin_fn(input->data, ggml_nbytes(input));
                             }
-                            if (single_expert && cache_set_fn) {
-                                cache_set_fn(
-                                    (const void *)(name_h ^ (uint64_t)first_id * 0x9E3779B97F4A7C15ULL),
-                                    expert_size, dst_gpu, nullptr);
+                        }
+
+                        // per-expert loop: copy each activated expert individually
+                        // [moe-l2 prefill 2026-08-10] Stage-2 experiment: on the
+                        // FIRST copy_experts call, bulk-write every in-map expert
+                        // of this tensor into the GPU expert cache so the first
+                        // request hits D2D instead of paying per-expert H2D+set.
+                        // Guarded by static flag (once per tensor name).
+                        {
+                            static std::unordered_set<std::string> prefill_done;
+                            const std::string tname = input->name ? input->name : "";
+                            if (g_router_mode && cache_set_fn && !tname.empty() &&
+                                prefill_done.count(tname) == 0) {
+                                prefill_done.insert(tname);
+                                const int il = router_layer_of(input);
+                                if (il >= 0 && (size_t) il < g_router_map.size()) {
+                                    const auto & rset = g_router_map[il];
+                                    if (!rset.empty()) {
+                                        const uint64_t name_h = std::hash<std::string>{}(tname);
+                                        int n_prefilled = 0;
+                                        for (int32_t e : rset) {
+                                            if (e < 0 || e >= n_expert) {
+                                                continue;
+                                            }
+                                            const size_t off = (size_t) e * expert_size;
+                                            const void * src_ptr = (const char *)input->data + off;
+                                            void * dst_gpu = (char *)input_cpy->data + off;
+                                            // H2D into the sched copy buffer...
+                                            ggml_backend_tensor_set_async(split_backend,
+                                                input_cpy, (const uint8_t *)src_ptr, off,
+                                                (e == n_expert - 1) ? expert_size : expert_size + padding);
+                                            // ...then D2D into the cache slot (key = name ^ e).
+                                            // [moe-l2 P0 fix v2 2026-08-13] the
+                                            // prefill must use the CURRENT
+                                            // stream too (like the per-expert
+                                            // loop below) — passing nullptr
+                                            // here put the D2D on the default
+                                            // stream, unsynchronized with the
+                                            // H2D on split's stream → garbage
+                                            // in cache slots → garbage output
+                                            // (reproduced with router map on
+                                            // 2026-08-13).
+                                            void * ps = cache_stream_fn ? cache_stream_fn(split_backend) : nullptr;
+                                            cache_set_fn(
+                                                (const void *)(name_h ^ (uint64_t) e * 0x9E3779B97F4A7C15ULL),
+                                                (e == n_expert - 1) ? expert_size : expert_size + padding,
+                                                dst_gpu, ps);
+                                            n_prefilled++;
+                                        }
+                                        fprintf(stderr,
+                                            "[moe-l2] prefill: %s -> %d experts into GPU cache\n",
+                                            tname.c_str(), n_prefilled);
+                                    }
+                                }
                             }
+                        }
+                        // [moe-l2 P0 speed-probe 2026-08-13] per-token stats:
+                        // cache hit/miss counts, H2D copy bytes, and H2D wall
+                        // time in the copy_experts path. Prints every 500 calls
+                        // so we can see where the 10 t/s actually goes.
+                        static long long probe_calls = 0, probe_hit = 0, probe_miss = 0, probe_h2d_bytes = 0, probe_h2d_us = 0;
+                        probe_calls++;
+                        for (int32_t e = first_id; e <= last_id; ++e) {
+                            const size_t off = (size_t) e * expert_size;
+                            // v3: CONSTANT copy length = es+padding for EVERY expert
+                            // (except the tensor's last expert, which has no padding
+                            // beyond it). The extra 512B copied for middle experts
+                            // just overwrites the next expert's head (harmless,
+                            // sequential order). Source always lies inside the
+                            // group-registered range → single range, no cross-range
+                            // bug, and the set_tensor_async fallback pin (same
+                            // length) hits the fast path.
+                            const size_t copy_len = (e == n_expert - 1) ? expert_size : expert_size + padding;
+                            const void * src_ptr = (const char *)input->data + off;
+
+                            void * dst_gpu = (char *)input_cpy->data + off;
+                            bool cache_hit = false;
+                            if (cache_copy_fn) {
+                                // 单专家粒度：查 cache，命中则数据已 D2D 拷入 dst_gpu。
+                                // RE-FETCH stream here too — the D2D must land
+                                // on the CURRENT node's stream so the consumer
+                                // (mul_mat_id on the same scheduled stream)
+                                // sees the copy in order.
+                                void * cs = cache_stream_fn ? cache_stream_fn(split_backend) : nullptr;
+                                {
+                                    // [moe-l2 2026-08-13 DS fix] D2D 也拷 es+padding：
+                                    // MMQ 需要 padding 区有效数据（H2D 拷 es+padding
+                                    // 才正常；只拷 es 则 padding 区是旧垃圾 → NaN）。
+                                    cache_hit = cache_copy_fn(
+                                        (const void *)(name_h ^ (uint64_t) e * 0x9E3779B97F4A7C15ULL),
+                                        dst_gpu, 0, copy_len, cs);
+                                }
+
+                            }
+
+                            if (!cache_hit) {
+                                // [moe-l2 P0 fix v2 2026-08-13] RE-FETCH the
+                                // stream right next to the H2D so the cache
+                                // D2D below lands on the SAME stream as the
+                                // H2D fill (curr_stream_no rotates between
+                                // graph nodes under concurrent streams).
+                                void * cs = cache_stream_fn ? cache_stream_fn(split_backend) : nullptr;
+                                auto probe_t0 = std::chrono::steady_clock::now();
+                                ggml_backend_tensor_set_async(split_backend,
+                                    input_cpy,
+                                    (const uint8_t *)src_ptr, off,
+                                    // copy a bit extra at the to ensure there are no NaNs in the padding of the last expert
+                                    // this is necessary for MMQ in the CUDA backend
+                                    copy_len);
+                                probe_h2d_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - probe_t0).count();
+                                probe_h2d_bytes += copy_len;
+                                probe_miss++;
+
+                                // miss: write back to cache for next token
+                                // [moe-l2 2026-08-13 DS fix] slot 也按 es+padding 存，
+                                // 保证 hit 时能拷出完整含 padding 的数据。
+                                if (cache_set_fn) {
+                                    cache_set_fn(
+                                        (const void *)(name_h ^ (uint64_t) e * 0x9E3779B97F4A7C15ULL),
+                                        copy_len, dst_gpu, cs);
+                                }
+                            } else {
+                                probe_hit++;
+                            }
+                        }
+                        if ((probe_calls % 500) == 0) {
+                            fprintf(stderr, "[SPEED-PROBE] calls=%lld hit=%lld miss=%lld hitrate=%.1f%% h2d_bytes=%.1fMB avg=%.0fKB/call h2d_us=%lld (%.2fms/call) total_us/call=%.2fms\n",
+                                probe_calls, probe_hit, probe_miss, 100.0*probe_hit/(probe_hit+probe_miss),
+                                probe_h2d_bytes/1048576.0, (double)probe_h2d_bytes/probe_calls/1024.0,
+                                probe_h2d_us, (double)probe_h2d_us/probe_calls/1000.0,
+                                (double)(probe_h2d_us)/probe_calls/1000.0);
                         }
                     };
 

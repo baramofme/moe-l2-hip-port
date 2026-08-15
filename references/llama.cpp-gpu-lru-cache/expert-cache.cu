@@ -2,6 +2,7 @@
 #include "common.cuh"
 
 #include <cuda_runtime.h>
+#include <mutex>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -35,6 +36,11 @@ static struct {
 // Slot formula uses it to cover the whole-model key space
 // (n_layers x 3 expert tensors x n_expert). Default 1 = old behaviour.
 static int g_n_layers = 1;
+
+// [moe-l2 2026-08-13 DS fix] 多 stream 并发竞态：concurrent-stream 调度会
+// 并行执行多个 copy_experts，无锁 g_cache 的 LRU victim 选择与 slot 写入
+// 互相竞争 → slot 数据错乱 → hit 输出垃圾（DS 实测）。所有 cache 操作持锁。
+static std::mutex g_cache_mtx;
 
 //
 // Helpers
@@ -83,18 +89,34 @@ void ggml_cuda_expert_cache_maybe_init(int n_expert) {
         }
     }
 
-    // moe-l2: allow up to 8x for large caches (512 slots max) so hot experts
+    // moe-l2: allow up to 8x for large caches so hot experts
     // survive LRU pressure from the ~468 block accesses per token
     if (fraction > 8.0f) {
         fraction = 8.0f;
     }
 
-    // moe-l2: scale slots by model layer count x 3 (gate/up/down expert
-    // tensors per layer) so the cache covers the whole-model key space.
-    // Old formula (fraction x n_expert) only covered ONE tensor's experts,
-    // so with 32 layers x 3 tensors the effective hit rate was ~0.
-    const float scale = 3.0f * (float)g_n_layers;
-    int n_slots = (int)std::ceil(fraction * (float)n_expert * scale);
+    // [moe-l2 2026-08-13] if the CLI injected an exact slot count derived
+    // from the selective-pin router map (MOE_L2_CACHE_SLOTS = n_layers *
+    // top_k * 3 gate/up/down tensors), use it directly. The generic formula
+    // below (fraction * n_expert * 3 * n_layers) computes e.g. 30720 slots
+    // for Qwen but EXPERT_CACHE_MAX_SLOTS truncates it, and the truncated
+    // 512-slot cache thrashed every token (measured hit rate 0.0%).
+    const char * slots_env = std::getenv("MOE_L2_CACHE_SLOTS");
+    int n_slots = 0;
+    if (slots_env && slots_env[0] != '\0') {
+        int ns = std::atoi(slots_env);
+        if (ns > 0) {
+            n_slots = ns;
+        }
+    }
+    if (n_slots <= 0) {
+        // fallback: scale slots by model layer count x 3 (gate/up/down
+        // expert tensors per layer) so the cache covers the whole-model key
+        // space. Old formula (fraction x n_expert) only covered ONE tensor's
+        // experts, so with 32 layers x 3 tensors the effective hit rate ~0.
+        const float scale = 3.0f * (float)g_n_layers;
+        n_slots = (int)std::ceil(fraction * (float)n_expert * scale);
+    }
     if (n_slots < 1) {
         n_slots = 1;
     }
@@ -164,6 +186,7 @@ const void * ggml_cuda_expert_cache_get(const void * cpu_src) {
         return nullptr;
     }
 
+    std::lock_guard<std::mutex> lock(g_cache_mtx);
     // Linear scan for a hit
     for (int i = 0; i < g_cache.n_slots; i++) {
         ExpertCacheSlot & slot = g_cache.slots[i];
@@ -188,7 +211,17 @@ bool ggml_cuda_expert_cache_copy_if_hit(
         return false;
     }
 
-    const void * src = ggml_cuda_expert_cache_get(cache_key);
+    std::lock_guard<std::mutex> lock(g_cache_mtx);
+
+    const void * src = nullptr;
+    for (int i = 0; i < g_cache.n_slots; i++) {
+        ExpertCacheSlot & slot = g_cache.slots[i];
+        if (slot.valid && slot.cpu_src == cache_key && slot.dev_ptr) {
+            src = slot.dev_ptr;
+            slot.timestamp = ++g_cache.clock;
+            break;
+        }
+    }
     if (src == nullptr) {
         return false; // miss — caller falls back to CPU→GPU copy
     }
@@ -219,6 +252,9 @@ const void * ggml_cuda_expert_cache_set(const void * cpu_src, size_t size, const
     if (!g_cache.initialized || !cpu_src || !dev_ptr || size == 0) {
         return nullptr;
     }
+
+    // [moe-l2 2026-08-13 DS fix] victim 选择 + slot 写入全程持锁
+    std::lock_guard<std::mutex> lock(g_cache_mtx);
 
     // ── Find LRU victim ────────────────────────────────────────
     int victim = -1;
@@ -270,10 +306,21 @@ const void * ggml_cuda_expert_cache_set(const void * cpu_src, size_t size, const
         slot.size    = size;
     }
 
-    // ── Async D2D copy ────────────────────────────────────────
-    CUDA_CHECK(cudaMemcpyAsync(
-        slot.dev_ptr, dev_ptr, size,
-        cudaMemcpyDeviceToDevice, stream));
+    // ── Async D2D copy (P0 fix v2 2026-08-13) ─────────────────
+    // v1 (sync cudaMemcpy) fixed the race but serializes every miss.
+    // v2: use the caller-provided stream (split_backend's stream, the SAME
+    // stream that fills dst_gpu via H2D) so the D2D cache write is ordered
+    // after the H2D fill without blocking. If stream is null (old callers)
+    // fall back to sync copy for correctness.
+    if (stream) {
+        CUDA_CHECK(cudaMemcpyAsync(
+            slot.dev_ptr, dev_ptr, size,
+            cudaMemcpyDeviceToDevice, stream));
+    } else {
+        CUDA_CHECK(cudaMemcpy(
+            slot.dev_ptr, dev_ptr, size,
+            cudaMemcpyDeviceToDevice));
+    }
 
     // ── Fill slot metadata ──────────────────────────────────────
     slot.cpu_src   = cpu_src;

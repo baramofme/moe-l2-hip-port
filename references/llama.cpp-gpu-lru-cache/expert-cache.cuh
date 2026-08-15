@@ -16,7 +16,14 @@
 // destruction (see ggml_cuda_free_data).
 
 // Maximum number of cache slots (safety limit).
-#define EXPERT_CACHE_MAX_SLOTS 512
+// [moe-l2 2026-08-13] raised 512 -> 16384: the slot formula is
+// fraction * n_expert * (3 * n_layers); for Qwen (256 experts, 40 layers,
+// ~1040 expert accesses/token) the formula yields ~30k slots but the old 512
+// cap truncated it, so LRU thrashed every token and the hit rate was 0.0%
+// (measured: hit=0 / miss=156189 over 150 tokens). The CLI now injects an
+// exact count (MOE_L2_CACHE_SLOTS = n_layers * top_k * 3, e.g. 43*100*3 =
+// 12900 for top-k=100), so the cap only guards against runaway configs.
+#define EXPERT_CACHE_MAX_SLOTS 16384
 
 // Lazy-init the expert cache from the GGML_CUDA_EXPERT_CACHE env var.
 // Slot count is computed as a fraction of the model's per-layer expert
