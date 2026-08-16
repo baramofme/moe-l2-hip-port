@@ -24,7 +24,7 @@
 Without moe-l2, a 10-11 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~9.3 GB VRAM (on-demand pin experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — with selective pin (v4_top100.map), RSS **26.8 GB** (from 84.4 GB whole-pin, −68%); on-demand fallback RSS 17.5 GB (VRAM 16.5-16.7 GB, measured 2026-08-10). ⚠️ **No valid speed data — upstream llama.cpp bug** ([#25582](https://github.com/ggml-org/llama.cpp/issues/25582)): deepseek4 MoE expert layers on CUDA produce garbled output (reproduces on pure vanilla llama-server, no moe-l2 involved); UD-IQ2_M/Q4_K_XL both affected. Waiting for upstream fix. Full report: [deepseek-v4-flash-verify-20260805.md](references/en/deepseek-v4-flash-verify-20260805.md) · **Qwen3-235B-A22B (235B params / 85.7 GB file, 128 experts, top-8) runs on a 24 GB card at ~3.9 t/s steady** — selective pin (top-60/layer, 98.5% coverage): 24 GB VRAM + 55 GB RAM, RSS 80.8 → 54.7 GB (−33%), measured 2026-08-11. Full report: [qwen3-235b-a22b-q2k-benchmark.md](references/en/qwen3-235b-a22b-q2k-benchmark.md) · **All measured models: [models-benchmark.md](references/en/models-benchmark.md)**
 
 
-### Visual demo (RTX 4090, 2026-08-10)
+### Visual demo (RTX 4090, 2026-08-16)
 
 | Qwen3.6-35B-A3B (32B MoE) — standard vs moe-l2 | DeepSeek-V2-Lite (16B MoE) — 8 GB card vs 24 GB card |
 |---|---|
@@ -34,11 +34,11 @@ Summary: **~57-60% less VRAM** — a 10-11 GB card runs what used to need 24 GB 
 
 ![moe-l2 summary](examples/demo-assets/fig3-summary.png)
 
-Live capture (2026-08-10, bins-v0.4.0 pre-fix demo): Qwen3.6-35B-A3B generating **3,200 tokens with VRAM at ~2.4 GB** (41.6 t/s) — watch the VRAM curve stay flat the whole run. ⚠️ 旧演示数据；v0.5.0 C 方案（2026-08-16）实测 VRAM ~5.4 GB / 20-34 t/s:
+Live capture (2026-08-16, bins-v0.5.0 C-scheme): Qwen3.6-35B-A3B generating **2,344 tokens with VRAM at ~5.4 GB** (~32 t/s) — watch the VRAM curve stay flat the whole run:
 
 [`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4) (45 s, 1280×720) · raw telemetry: [`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · full generated text: [`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
 
-### Benchmarked on RTX 4090 (2026-08-10, selective pin main path)
+### Benchmarked on RTX 4090 (2026-08-16, v0.5.0 C-scheme main path)
 
 | Mode | GPU VRAM | Gen speed | What it means |
 |------|----------|-----------|---------------|

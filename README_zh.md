@@ -23,7 +23,7 @@
 
 **DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——显存 16.5-16.7GB（on-demand 兜底，RSS 17.5GB；selective pin v4_top100.map：RSS 26.8GB），2026-08-10 实测。⚠️ **无有效速度数据——上游 llama.cpp bug（[#25582](https://github.com/ggml-org/llama.cpp/issues/25582)）**：deepseek4 MoE 专家层在 CUDA 上输出乱码（纯原版 llama-server 复现，与 moe-l2 无关）；UD-IQ2_M / Q4_K_XL 均受影响，等上游修复。 完整报告：[deepseek-v4-flash-verify-20260805.md](references/zh/deepseek-v4-flash-verify-20260805.md) · **Qwen3-235B-A22B（235B 参数 / 85.7GB 文件，128 专家、激活 8）在 24GB 卡上也能跑**——RTX 4090 实测稳态 **~3.9 t/s**（selective pin top-60/层，覆盖 98.5%）：24GB 显存 + 55GB 内存，RSS 80.8 → 54.7GB（-33%），2026-08-11 实测。完整报告：[qwen3-235b-a22b-q2k-benchmark.md](references/zh/qwen3-235b-a22b-q2k-benchmark.md) · **全部已测模型汇总：[models-benchmark.md](references/zh/models-benchmark.md)**
 
-### 可视化演示（RTX 4090，2026-08-10）
+### 可视化演示（RTX 4090，2026-08-16）
 
 | Qwen3.6-35B-A3B（32B MoE）— 标准 vs moe-l2 | DeepSeek-V2-Lite（16B MoE）— 8GB 卡 vs 24GB 卡 |
 |---|---|
@@ -33,13 +33,13 @@
 
 ![moe-l2 汇总](examples/demo-assets/fig3-summary.png)
 
-实机录屏（2026-08-10，bins-v0.4.0 修复前旧演示）：Qwen3.6-35B-A3B 生成 **3200 tokens，显存 ~2.4 GB**（41.6 t/s）。⚠️ 旧演示数据；v0.5.0 C 方案（2026-08-16）实测 VRAM ~5.4 GB / 20-34 t/s：
+实机录屏（2026-08-16，bins-v0.5.0 C 方案）：Qwen3.6-35B-A3B 生成 **2344 tokens，显存 ~5.4 GB**（~32 t/s）——显存曲线全程平稳：
 
 [`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4)（45 秒，1280×720）· 原始采样：[`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · 生成全文：[`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
 
 ---
 
-### Benchmarked on RTX 4090（2026-08-16，C 方案按领域换表主路径，bins-v0.5.0）
+### Benchmarked on RTX 4090（2026-08-16，v0.5.0 C 方案主路径）
 
 基于 **RTX 4090** 实测（2026-08-16，selective pin + C 方案主路径：路由表按领域驱动 top-K pin + 换表 + GPU cache 预填充，bins-v0.5.0）：
 
