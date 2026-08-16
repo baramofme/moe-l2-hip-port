@@ -2,7 +2,6 @@
 #include "common.cuh"
 
 #include <cuda_runtime.h>
-#include <mutex>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -36,11 +35,6 @@ static struct {
 // Slot formula uses it to cover the whole-model key space
 // (n_layers x 3 expert tensors x n_expert). Default 1 = old behaviour.
 static int g_n_layers = 1;
-
-// [moe-l2 2026-08-13 DS fix] 多 stream 并发竞态：concurrent-stream 调度会
-// 并行执行多个 copy_experts，无锁 g_cache 的 LRU victim 选择与 slot 写入
-// 互相竞争 → slot 数据错乱 → hit 输出垃圾（DS 实测）。所有 cache 操作持锁。
-static std::mutex g_cache_mtx;
 
 //
 // Helpers
@@ -89,31 +83,46 @@ void ggml_cuda_expert_cache_maybe_init(int n_expert) {
         }
     }
 
-    // moe-l2: allow up to 8x for large caches so hot experts
+    // moe-l2: allow up to 8x for large caches (512 slots max) so hot experts
     // survive LRU pressure from the ~468 block accesses per token
     if (fraction > 8.0f) {
         fraction = 8.0f;
     }
 
-    // [moe-l2 2026-08-13] if the CLI injected an exact slot count derived
-    // from the selective-pin router map (MOE_L2_CACHE_SLOTS = n_layers *
-    // top_k * 3 gate/up/down tensors), use it directly. The generic formula
-    // below (fraction * n_expert * 3 * n_layers) computes e.g. 30720 slots
-    // for Qwen but EXPERT_CACHE_MAX_SLOTS truncates it, and the truncated
-    // 512-slot cache thrashed every token (measured hit rate 0.0%).
+    // [moe-l2 2026-08-14 cache 容量联动] 首选：路由表元数据 EXPERT_TOTAL。
+    // 设计（TOP N / TOP K）：cache 只服务路由表选中的专家，容量 = 选中数 x 3
+    // （gate/up/down 每专家 3 张量）。这替代 fraction x 全模型专家空间公式——
+    // 后者对 157B 级模型（256 专家 x 41 层）会算出 3 万+ 槽位，clamp 到 2048
+    // 后每槽 24MB（Q4）也远超 24GB 显存（实测 OOM）。路由表是 Python 层按
+    // 显存预算（N）+ 覆盖率（top-k）收敛好的，用它算槽数 = 回到设计本意。
+    // [moe-l2 2026-08-15] 手动槽数优先：MOE_L2_CACHE_SLOTS 显式指定时用
+    // 环境变量（08-14 版误删此支持，用户无法手动加大槽数；实测 11913 槽 vs
+    // 容量联动 5421 槽 = 命中率 87% vs 65% 级别的差异）。否则走 EXPERT_TOTAL。
     const char * slots_env = std::getenv("MOE_L2_CACHE_SLOTS");
+    const char * rf_env = std::getenv("MOE_L2_ROUTER_FILE");
     int n_slots = 0;
     if (slots_env && slots_env[0] != '\0') {
-        int ns = std::atoi(slots_env);
-        if (ns > 0) {
-            n_slots = ns;
-        }
+        n_slots = std::atoi(slots_env);
     }
     if (n_slots <= 0) {
-        // fallback: scale slots by model layer count x 3 (gate/up/down
-        // expert tensors per layer) so the cache covers the whole-model key
-        // space. Old formula (fraction x n_expert) only covered ONE tensor's
-        // experts, so with 32 layers x 3 tensors the effective hit rate ~0.
+        if (rf_env && rf_env[0] != '\0') {
+            FILE * rf = std::fopen(rf_env, "r");
+            if (rf) {
+                char line[1024];
+                while (std::fgets(line, sizeof(line), rf)) {
+                    if (std::strncmp(line, "# EXPERT_TOTAL ", 15) == 0) {
+                        n_slots = std::atoi(line + 15) * 3;  // 3 tensors per expert
+                        break;
+                    }
+                }
+                std::fclose(rf);
+            }
+        }
+    }
+
+    // 无路由表（或元数据缺失）→ 回退旧公式：fraction x 全模型专家空间。
+    // 保守行为：路由表缺失时保持旧行为，不破坏无表场景（N=0 纯 on-demand）。
+    if (n_slots <= 0) {
         const float scale = 3.0f * (float)g_n_layers;
         n_slots = (int)std::ceil(fraction * (float)n_expert * scale);
     }
@@ -132,8 +141,8 @@ void ggml_cuda_expert_cache_maybe_init(int n_expert) {
 
     // size=0: no pre-allocation; each slot allocates on first set.
     ggml_cuda_expert_cache_init(device, n_slots, 0);
-    fprintf(stderr, "[A3] expert_cache initialized: %d slots on device %d (fraction=%.2f, n_expert=%d)\n",
-            n_slots, device, fraction, n_expert);
+    fprintf(stderr, "[A3] expert_cache initialized: %d slots on device %d (fraction=%.2f, n_expert=%d, router_total=%d)\n",
+            n_slots, device, fraction, n_expert, rf_env && rf_env[0] != '\0' ? n_slots / 3 : -1);
 }
 
 void ggml_cuda_expert_cache_set_n_layers(int n_layers) {
@@ -186,7 +195,6 @@ const void * ggml_cuda_expert_cache_get(const void * cpu_src) {
         return nullptr;
     }
 
-    std::lock_guard<std::mutex> lock(g_cache_mtx);
     // Linear scan for a hit
     for (int i = 0; i < g_cache.n_slots; i++) {
         ExpertCacheSlot & slot = g_cache.slots[i];
@@ -211,17 +219,7 @@ bool ggml_cuda_expert_cache_copy_if_hit(
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(g_cache_mtx);
-
-    const void * src = nullptr;
-    for (int i = 0; i < g_cache.n_slots; i++) {
-        ExpertCacheSlot & slot = g_cache.slots[i];
-        if (slot.valid && slot.cpu_src == cache_key && slot.dev_ptr) {
-            src = slot.dev_ptr;
-            slot.timestamp = ++g_cache.clock;
-            break;
-        }
-    }
+    const void * src = ggml_cuda_expert_cache_get(cache_key);
     if (src == nullptr) {
         return false; // miss — caller falls back to CPU→GPU copy
     }
@@ -252,9 +250,6 @@ const void * ggml_cuda_expert_cache_set(const void * cpu_src, size_t size, const
     if (!g_cache.initialized || !cpu_src || !dev_ptr || size == 0) {
         return nullptr;
     }
-
-    // [moe-l2 2026-08-13 DS fix] victim 选择 + slot 写入全程持锁
-    std::lock_guard<std::mutex> lock(g_cache_mtx);
 
     // ── Find LRU victim ────────────────────────────────────────
     int victim = -1;
@@ -306,21 +301,10 @@ const void * ggml_cuda_expert_cache_set(const void * cpu_src, size_t size, const
         slot.size    = size;
     }
 
-    // ── Async D2D copy (P0 fix v2 2026-08-13) ─────────────────
-    // v1 (sync cudaMemcpy) fixed the race but serializes every miss.
-    // v2: use the caller-provided stream (split_backend's stream, the SAME
-    // stream that fills dst_gpu via H2D) so the D2D cache write is ordered
-    // after the H2D fill without blocking. If stream is null (old callers)
-    // fall back to sync copy for correctness.
-    if (stream) {
-        CUDA_CHECK(cudaMemcpyAsync(
-            slot.dev_ptr, dev_ptr, size,
-            cudaMemcpyDeviceToDevice, stream));
-    } else {
-        CUDA_CHECK(cudaMemcpy(
-            slot.dev_ptr, dev_ptr, size,
-            cudaMemcpyDeviceToDevice));
-    }
+    // ── Async D2D copy ────────────────────────────────────────
+    CUDA_CHECK(cudaMemcpyAsync(
+        slot.dev_ptr, dev_ptr, size,
+        cudaMemcpyDeviceToDevice, stream));
 
     // ── Fill slot metadata ──────────────────────────────────────
     slot.cpu_src   = cpu_src;
@@ -346,4 +330,33 @@ void ggml_cuda_expert_cache_free(void) {
     CUDA_CHECK(cudaSetDevice(prev_device));
 
     std::memset(&g_cache, 0, sizeof(g_cache));
+}
+
+// [moe-l2 route-by-domain C 2026-08-15] 槽数随路由表动态调整。
+// 换表（/moe-set-domain）时调用：清空并释放全部槽（旧领域数据作废），
+// 把 n_slots 设为 new_n_slots（clamp 到 [1, EXPERT_CACHE_MAX_SLOTS]）。
+// 解决：flywheel 表 rebuild 变大后换表 payload 超过启动时定的槽数，
+// LRU 反复逐出且不释放显存 → DS 大专家场景显存峰值超限 OOM。
+void ggml_cuda_expert_cache_resize(int new_n_slots) {
+    if (!g_cache.initialized) {
+        return;
+    }
+    int prev_device;
+    CUDA_CHECK(cudaGetDevice(&prev_device));
+    CUDA_CHECK(cudaSetDevice(g_cache.device));
+
+    for (int i = 0; i < g_cache.n_slots; i++) {
+        expert_cache_clear_slot(g_cache.slots[i]);
+    }
+
+    CUDA_CHECK(cudaSetDevice(prev_device));
+
+    int actual = std::min(new_n_slots, EXPERT_CACHE_MAX_SLOTS);
+    if (actual < 1) {
+        actual = 1;
+    }
+    g_cache.n_slots = actual;
+    g_cache.clock   = 0;
+    fprintf(stderr, "[A3] expert_cache resized: %d slots on device %d\n",
+            g_cache.n_slots, g_cache.device);
 }

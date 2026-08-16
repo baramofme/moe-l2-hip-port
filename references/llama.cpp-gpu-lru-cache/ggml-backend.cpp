@@ -30,6 +30,60 @@
 #include <sys/sysctl.h>
 #endif
 
+// [moe-l2 route-by-domain C 2026-08-15] 文件级 router map（原为
+// ggml_backend_sched_compute_splits 内 static，提级以便 server 按预测领域动态换表）。
+// 消费方：copy_experts 路径（selective pin + prefill），更新方：server /moe-set-domain。
+static std::vector<std::unordered_set<int32_t>> g_router_map;
+static bool g_router_loaded = false;
+static bool g_router_mode = []() {
+    const char * env = getenv("MOE_L2_ROUTER_FILE");
+    return env && env[0] != '\0';
+}();
+static std::unordered_set<std::string> g_prefill_done;
+
+// [moe-l2 route-by-domain C 2026-08-15] 供 llama-server 运行时更新路由表（按领域换表）：
+//   set_layer(layer, experts, n)    —— 替换某层的专家集合（无则插入新层）
+//   router_reset_prefill()          —— 清 prefill_done，下次请求重新 prefill 新表
+//   router_clear()                  —— 清空整表 + prefill 状态（回退纯 on-demand）
+extern "C" {
+void ggml_backend_router_set_layer(int layer, const int32_t * experts, int n) {
+    if (layer < 0 || experts == nullptr || n <= 0) return;
+    if ((size_t) layer >= g_router_map.size()) g_router_map.resize(layer + 1);
+    auto & s = g_router_map[layer];
+    s.clear();
+    for (int i = 0; i < n; ++i) {
+        if (experts[i] >= 0) s.insert(experts[i]);
+    }
+}
+void ggml_backend_router_reset_prefill() {
+    g_prefill_done.clear();
+}
+void ggml_backend_router_clear() {
+    g_router_map.clear();
+    g_prefill_done.clear();
+    g_router_loaded = true;  // 阻止后续从 MOE_L2_ROUTER_FILE 重新加载覆盖新表
+}
+// [moe-l2 route-by-domain C 2026-08-15] 换表时同步调整 cache 槽数：
+// 清空释放旧槽（旧领域数据作废）并把 n_slots 设为 new_n_slots。
+// 经 CUDA backend 的 get_proc_address 解析 ggml_cuda_expert_cache_resize。
+void ggml_backend_router_resize_cache(int new_n_slots) {
+    if (new_n_slots <= 0) return;
+    static void (*resize_fn)(int) = nullptr;
+    static bool resolved = false;
+    if (!resolved) {
+        auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        if (cuda_dev) {
+            auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
+            resize_fn = (void (*)(int))
+                ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_resize");
+        }
+        resolved = true;
+    }
+    if (resize_fn) {
+        resize_fn(new_n_slots);
+    }
+}
+}
 
 // backend buffer type
 
@@ -1627,12 +1681,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // loaded once from MOE_L2_ROUTER_FILE (format: "layer expert1 expert2 ..." per line).
                     // When set, ONLY experts listed in the map get cudaHostRegister'd (DMA fast path);
                     // unlisted experts stay mmap'd and fault in on-demand via set_tensor_async (slow path).
-                    static std::vector<std::unordered_set<int32_t>> g_router_map;
-                    static bool g_router_loaded = false;
-                    static bool g_router_mode = []() {
-                        const char * env = getenv("MOE_L2_ROUTER_FILE");
-                        return env && env[0] != '\0';
-                    }();
+                    // [moe-l2 route-by-domain C 2026-08-15] g_router_map / g_router_loaded /
+                    // g_router_mode / g_prefill_done are file-scope statics (see file top) so the
+                    // server can swap the map per predicted domain at runtime.
                     if (g_router_mode && !g_router_loaded) {
                         g_router_loaded = true;
                         const char * path = getenv("MOE_L2_ROUTER_FILE");
@@ -1854,11 +1905,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         // request hits D2D instead of paying per-expert H2D+set.
                         // Guarded by static flag (once per tensor name).
                         {
-                            static std::unordered_set<std::string> prefill_done;
                             const std::string tname = input->name ? input->name : "";
                             if (g_router_mode && cache_set_fn && !tname.empty() &&
-                                prefill_done.count(tname) == 0) {
-                                prefill_done.insert(tname);
+                                g_prefill_done.count(tname) == 0) {
+                                g_prefill_done.insert(tname);
                                 const int il = router_layer_of(input);
                                 if (il >= 0 && (size_t) il < g_router_map.size()) {
                                     const auto & rset = g_router_map[il];
@@ -1961,10 +2011,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 // miss: write back to cache for next token
                                 // [moe-l2 2026-08-13 DS fix] slot 也按 es+padding 存，
                                 // 保证 hit 时能拷出完整含 padding 的数据。
+                                // [moe-l2 2026-08-15 表外只拷不缓存] 有路由表时，
+                                // 表外专家（不在路由表内，低频 ~1.5% 激活）只做 H2D
+                                // 拷贝、不写回 cache——避免冷专家挤占热专家槽位导致
+                                // LRU 抖动；无路由表（非 g_router_mode）时维持原行为
+                                // （全部缓存）。
                                 if (cache_set_fn) {
-                                    cache_set_fn(
-                                        (const void *)(name_h ^ (uint64_t) e * 0x9E3779B97F4A7C15ULL),
-                                        copy_len, dst_gpu, cs);
+                                    bool in_router = !g_router_mode;
+                                    if (g_router_mode) {
+                                        const int il0 = router_layer_of(input);
+                                        in_router = (il0 >= 0 && (size_t) il0 < g_router_map.size() &&
+                                                     g_router_map[il0].count(e) > 0);
+                                    }
+                                    if (in_router) {
+                                        cache_set_fn(
+                                            (const void *)(name_h ^ (uint64_t) e * 0x9E3779B97F4A7C15ULL),
+                                            copy_len, dst_gpu, cs);
+                                    }
                                 }
                             } else {
                                 probe_hit++;

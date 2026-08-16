@@ -82,3 +82,7 @@ const void * ggml_cuda_expert_cache_set(const void * cpu_src, size_t size, const
 // Free all cached GPU buffers and reset the cache to uninitialized
 // state. Safe to call even if the cache was never initialized.
 void ggml_cuda_expert_cache_free(void);
+
+// [moe-l2 route-by-domain C 2026-08-15] 运行时调整 cache 槽数：
+// 清空释放全部槽（旧领域数据作废），把 n_slots 设为 new_n_slots。
+void ggml_cuda_expert_cache_resize(int new_n_slots);

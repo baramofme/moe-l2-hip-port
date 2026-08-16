@@ -5889,6 +5889,11 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_cuda_expert_cache_maybe_init") == 0) {
         return (void *)ggml_cuda_expert_cache_maybe_init;
     }
+    // [moe-l2 route-by-domain C 2026-08-15] expose cache resize so the
+    // scheduler can adjust slot count when the router map changes at runtime.
+    if (strcmp(name, "ggml_cuda_expert_cache_resize") == 0) {
+        return (void *)ggml_cuda_expert_cache_resize;
+    }
     if (strcmp(name, "ggml_cuda_expert_pin_host") == 0) {
         return (void *)ggml_cuda_expert_pin_host;
     }
