@@ -11,7 +11,7 @@
 |------|------|------|------|------------|----------|----------|------|----------|
 | DeepSeek-V2-Lite | 16B MoE | 6 GB | Q2_K | 64 (top-6) | **~10 GB** | **~6.7 GB** | **127-137 t/s** (4090, v0.5.0 C-scheme) / 83-88 (2080 Ti) / **145-153 (5090, real SM120a)** | RTX 4090 / 2080 Ti / 5090 |
 | Qwen3.6-35B-A3B | 32B MoE | 11 GB | UD-IQ2_M | 256 (top-8) | **~5.4 GB** | **~8.4-10.9 GB** | **20-34 t/s** (4090, v0.5.0 C-scheme mixed-domain) / 13-25 (2080 Ti) / **45-51 (5090, real SM120a)** | RTX 4090 / 2080 Ti / 5090 |
-| DeepSeek-V4-Flash | **157B MoE** | **85 GB** (3 shards) | UD-IQ2_M | 256 (top-6) | **16.5-16.7 GB** | **17.5-26.8 GB** (on-demand/selective pin) | ⚠️ **N/A — speed pending Q4 quant** (UD-IQ2_M 2-bit degrades to garbage; vanilla also affected) | RTX 4090 |
+| DeepSeek-V4-Flash | **157B MoE** | **85 GB** (3 shards) | UD-IQ2_M | 256 (top-6) | **16.5-16.7 GB** | **17.5-26.8 GB** (on-demand/selective pin) | ⚠️ **N/A — upstream llama.cpp deepseek4 CUDA expert bug** ([#25582](https://github.com/ggml-org/llama.cpp/issues/25582)); UD-IQ2_M/Q4_K_XL garbled on pure vanilla too | RTX 4090 |
 | Mixtral-8x7B | 47B MoE | ~16 GB | Q4_K_M | 8 (top-2) | 2.2-2.9 GB | — | 3.7 t/s* | RTX 4090 (cache test conditions) |
 | Qwen3-235B-A22B | 235B MoE | 85.7 GB | Q2_K | 128 (top-8) | **13.9 GB** | **54.7 GB** (selective pin) | **~3.9 t/s** (steady state, 4090) | RTX 4090 |
 

@@ -11,7 +11,7 @@
 |------|------|------|------|------------|----------|----------|------|----------|
 | DeepSeek-V2-Lite | 16B MoE | 6 GB | Q2_K | 64 (top-6) | **~10 GB** | **~6.7 GB** | **127-137 t/s** (4090，v0.5.0 C 方案) / 83-88 (2080 Ti，v0.5.0) / **145-153 (5090，v0.5.0 真实数据，替换 P0 假速度)** | RTX 4090 / 2080 Ti / 5090 |
 | Qwen3.6-35B-A3B | 32B MoE | 11 GB | UD-IQ2_M | 256 (top-8) | **~5.4 GB** | **~8.4-10.9 GB** | **20-34 t/s** (4090，v0.5.0 C 方案混合领域) / 13-25 (2080 Ti，v0.5.0) / **45-51 (5090，v0.5.0 真实数据，替换 P0 假速度)** | RTX 4090 / 2080 Ti / 5090 |
-| DeepSeek-V4-Flash | **157B MoE** | **85 GB** (3 分片) | UD-IQ2_M | 256 (top-6) | **16.5-16.7 GB** | **17.5-26.8 GB**（on-demand/selective pin） | ⚠️ N/A — 速度待 Q4 量化版 | RTX 4090 |
+| DeepSeek-V4-Flash | **157B MoE** | **85 GB** (3 分片) | UD-IQ2_M | 256 (top-6) | **16.5-16.7 GB** | **17.5-26.8 GB**（on-demand/selective pin） | ⚠️ N/A — 上游 deepseek4 CUDA 专家 bug（#25582） | RTX 4090 |
 | Mixtral-8x7B | 47B MoE | ~16 GB | Q4_K_M | 8 (top-2) | 2.2-2.9 GB | — | 3.7 t/s* | RTX 4090（cache 测试口径） |
 | Qwen3-235B-A22B | 235B MoE | 85.7 GB | Q2_K | 128 (top-8) | **13.9 GB** | **54.7 GB**（selective pin） | **~3.9 t/s**（稳态，4090） | RTX 4090 |
 
@@ -24,7 +24,7 @@
 |------|-------------|--------|------|----------|
 | DeepSeek-V2-Lite | 23.3 GB VRAM, 65 t/s | **~10 GB, 127-137 t/s**（4090，2026-08-16 v0.5.0 C 方案） | **57%** | 205% |
 | Qwen3.6-35B-A3B | 8GB 卡 OOM | **~5.4 GB, 20-34 t/s**（4090，2026-08-16 v0.5.0 C 方案） | — | ≈ pre-lazy 46.5 |
-| DeepSeek-V4-Flash | 10-11GB 卡 OOM | **16.5 GB VRAM / 17.5 GB RSS**（4090；⚠️ 速度待 Q4 量化版） | — | on-demand/selective pin 均可 |
+| DeepSeek-V4-Flash | 10-11GB 卡 OOM | **16.5 GB VRAM / 17.5 GB RSS**（4090；⚠️ 速度 N/A — 上游 deepseek4 CUDA 专家 bug #25582） | — | on-demand/selective pin 均可 |
 
 ## 全链路实测（v3.1 固定专家数淘汰，RSS 封顶）
 
