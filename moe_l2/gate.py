@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 import urllib.request
 from collections import defaultdict, deque
 
