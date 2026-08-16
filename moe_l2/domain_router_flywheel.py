@@ -77,6 +77,57 @@ class DomainRouterFlywheel:
         self._rebuilds = 0
         self._lock = __import__("threading").Lock()
 
+        # [2026-08-16 load-existing] 启动时加载已有表到 _agg（保底计数），
+        # 防止进程重启后新进程的少量请求 rebuild 覆盖丢失历史领域/专家。
+        self._load_existing_map()
+
+    def _load_existing_map(self) -> None:
+        """把已有路由表 JSON 的 per_layer 专家加载进 _agg（计数=1 保底）。
+
+        背景：_agg 是纯内存聚合，进程重启归零；若直接跑少量请求就 rebuild，
+        os.replace 会用新进程数据覆盖全量历史表（实测丢 translate/creative_write
+        /math/logic 4 个领域，Qwen 掉速 55%）。加载旧表后 rebuild 时旧领域/专家
+        至少保留 top-k 条，新数据自然累积覆盖高频位置，不阻塞"越用越准"。
+        """
+        try:
+            if not self.map_path.exists():
+                return
+            with open(self.map_path, encoding="utf-8") as f:
+                data = json.load(f)
+            domains = data.get("domains") or {}
+            loaded_dom = 0
+            loaded_exp = 0
+            for dom, v in domains.items():
+                if not isinstance(v, dict):
+                    continue
+                per_layer = v.get("per_layer_domain_preferred") or {}
+                for layer_str, experts in per_layer.items():
+                    if not isinstance(experts, list):
+                        continue
+                    try:
+                        layer = int(layer_str)
+                    except ValueError:
+                        continue
+                    for eid in experts:
+                        try:
+                            eid = int(eid)
+                        except (TypeError, ValueError):
+                            continue
+                        self._agg[dom][layer][eid] += 1  # 保底计数
+                        loaded_exp += 1
+                if per_layer:
+                    loaded_dom += 1
+            # 恢复领域热度榜（rebuild 写 dom_freq 用）
+            old_freq = data.get("dom_freq") or {}
+            for dom, n in old_freq.items():
+                self._dom_freq[dom] += int(n)
+            if loaded_dom:
+                logger.info(
+                    "Router flywheel: loaded existing map %s (%d domains, %d experts)",
+                    self.map_path.name, loaded_dom, loaded_exp)
+        except Exception as e:  # 加载失败不能崩，走全新收集
+            logger.warning("Router flywheel: load existing map failed (fresh start): %s", e)
+
     # ── 入口 ────────────────────────────────────────────────
 
     def set_domain(self, domain: str) -> None:

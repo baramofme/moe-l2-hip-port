@@ -235,7 +235,7 @@ def filter_hot_domains(table_path: Path, hot_domains: list[str] | None = None,
         hot_domains = hot_domains[:n_hot]
     k = top_k_for_coverage(coverage_target)
 
-    layers: dict[int, set] = defaultdict(set)
+    layers: dict[int, Counter] = defaultdict(Counter)
     for dom in hot_domains:
         domdata = domains.get(dom)
         if not domdata:
@@ -243,9 +243,17 @@ def filter_hot_domains(table_path: Path, hot_domains: list[str] | None = None,
         plist = domdata.get("per_layer_domain_preferred", {})
         for lk, experts in plist.items():
             # 旧表是 top-100，这里截断到 k
-            layers[int(lk)].update(list(experts)[:k])
+            # 按"领域覆盖数"加权：同一专家出现在越多热门领域，得分越高
+            # （跨领域通用专家优先保留；单领域专家也能进，只是排后面）
+            for e in list(experts)[:k]:
+                layers[int(lk)][e] += 1
 
-    per_layer = {str(L): sorted(exp)[:k] for L, exp in sorted(layers.items())}
+    # [A-fix 2026-08-15] 不再按 ID 排序截断（会把 union 截成 ID 最小的 k 个，
+    # 与覆盖率意图相反）；改为按领域覆盖数降序取 top-k（Counter.most_common）。
+    per_layer = {
+        str(L): [e for e, _ in layers[L].most_common(k)]
+        for L in sorted(layers)
+    }
     new_table = {
         "description": f"hot-domain filtered (domains={hot_domains}, top-{k}/layer, "
                        f"coverage target {coverage_target:.0%})",
@@ -354,10 +362,17 @@ def build_router_map_file(model_path: str, router_top_k: int = 75,
             layers[L] = layers[L][:shrink]
 
     tmp = tempfile.NamedTemporaryFile("w", suffix=".router.map", delete=False, prefix="moe-l2-router-")
-    total_experts = 0
-    for layer in sorted(layers.keys()):
-        experts = sorted(layers[layer])[:router_top_k]
-        total_experts += len(experts)
+    # [moe-l2 2026-08-14 cache 容量联动] 第一行元数据：# EXPERT_TOTAL <n>
+    # C++ A3 cache 用它算 n_slots（= 路由表选中专家数 × 3 张量），替代
+    # fraction × 全模型专家空间公式 —— 回到 TOP N / TOP K 设计：cache 只服务
+    # 路由表选中的专家，容量 = 选中数 × 3，不再被全模型空间放大。
+    # 先统计总数（写元数据行时就得是最终值）
+    _layer_experts = {
+        L: sorted(layers[L])[:router_top_k] for L in sorted(layers.keys())
+    }
+    total_experts = sum(len(v) for v in _layer_experts.values())
+    tmp.write(f"# EXPERT_TOTAL {total_experts}\n")
+    for layer, experts in _layer_experts.items():
         tmp.write(f"{layer} " + " ".join(str(e) for e in experts) + "\n")
     tmp.close()
     print(f"  selective pin: router map = {tmp.name} ({len(layers)} layers, "

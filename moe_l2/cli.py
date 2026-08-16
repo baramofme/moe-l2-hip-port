@@ -184,6 +184,8 @@ def _start_llama_server(
     port: int,
     router_map: str | None = None,
     router_top_k: int = 100,
+    n_ctx: int | None = None,
+    n_parallel: int | None = None,
 ) -> subprocess.Popen:
     """Launch bundled llama-server with GPU support (A3 patch enabled).
 
@@ -191,6 +193,8 @@ def _start_llama_server(
     Uses mmap default so expert tensors stay in CPU RAM.
     router_map: optional path to selective-pin router map (MOE_L2_ROUTER_FILE).
     When router_map is None, no selective pin (whole-pin default).
+    n_ctx/n_parallel: 显式指定则用；None 时启动前探测显存自动算 safe 值
+    （防 KV 预分配 OOM 崩溃，2026-08-15 vram_adaptive）。
     """
     if not _LLAMA_SERVER_PATH.exists():
         raise FileNotFoundError(
@@ -241,8 +245,31 @@ def _start_llama_server(
         "--model", model_path,
         # Reasonable defaults for consumer GPUs
         "-ngl", "99",       # offload non-expert layers to GPU
-        "-c", "8192",       # 8K context — mmap default leaves expert in CPU RAM
     ]
+
+    # [moe-l2 2026-08-15 显存自适应] KV 预分配按 parallel × n_ctx，显存不足直接
+    # cudaMalloc 崩溃（Qwen cache + parallel 4 在 11GB 卡 OOM 实测）。启动前
+    # 探测显存 + 按模型 KV 估算自动降档。显式传入的 n_ctx/n_parallel 作为
+    # "期望值"，显存不够时仍会降档（想要 4 路但放不下 → 自动降到能跑的）。
+    try:
+        from moe_l2.vram_adaptive import compute_safe_params
+        params = compute_safe_params(
+            model_path,
+            want_ctx=n_ctx or 8192,
+            want_parallel=n_parallel or 1,
+        )
+        n_ctx = params["n_ctx"]
+        n_parallel = params["n_parallel"]
+        if params["reason"] != "OK":
+            print(f"  [vram-adaptive] {params['reason']}")
+    except Exception as e:  # 自适应失败不阻塞启动，用默认
+        print(f"  [vram-adaptive] ⚠️ 自动降档失败，用默认 c8192/parallel1：{e}")
+        n_ctx = n_ctx or 8192
+        n_parallel = n_parallel or 1
+
+    cmd += ["-c", str(n_ctx)]
+    if n_parallel and n_parallel > 1:
+        cmd += ["--parallel", str(n_parallel)]
 
     logger.info("Launching llama-server (A3 GPU): %s", " ".join(cmd))
     proc = subprocess.Popen(
@@ -373,7 +400,7 @@ def main():
         default=75,
         help=(
             "[moe-l2 2026-08-13] Max experts per layer for auto-generated router "
-            "map (default: 75 = coverage ~90%). Only used when --router-map is not given."
+            "map (default: 75 = coverage ~90%%). Only used when --router-map is not given."
         ),
     )
     start_parser.add_argument(
@@ -382,8 +409,27 @@ def main():
         default=0.90,
         help=(
             "[moe-l2 2026-08-13] Coverage target for auto router map (default: 0.90). "
-            "top-k derived from measured coverage curve (80%->30, 85%->50, "
-            "90%->75, 95%->100), then clamped by VRAM budget."
+            "top-k derived from measured coverage curve (80%%->30, 85%%->50, "
+            "90%%->75, 95%%->100), then clamped by VRAM budget."
+        ),
+    )
+    start_parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help=(
+            "[moe-l2 2026-08-15] Concurrent slots (--parallel N). KV cache is "
+            "pre-allocated per slot, so on small GPUs a large N can OOM — "
+            "moe-l2 auto-probes VRAM and downgrades parallel/context if needed."
+        ),
+    )
+    start_parser.add_argument(
+        "--ctx-size",
+        type=int,
+        default=8192,
+        help=(
+            "[moe-l2 2026-08-15] Context size (default: 8192). Auto-downgraded "
+            "when VRAM is insufficient (see --parallel)."
         ),
     )
 
@@ -806,7 +852,14 @@ def cmd_start(args):
                     data_dir=data_dir,
                     coverage_target=getattr(args, "coverage_target", 0.90),
                 )
-            llama_proc = _start_llama_server(model_path, _GPU_PORT, router_map_path, router_top_k)
+            llama_proc = _start_llama_server(
+                model_path,
+                _GPU_PORT,
+                router_map_path,
+                router_top_k,
+                n_ctx=getattr(args, "ctx_size", None),
+                n_parallel=getattr(args, "parallel", None),
+            )
         except FileNotFoundError as e:
             print(f"  ERROR: {e}")
             return 1
@@ -843,6 +896,7 @@ def cmd_start(args):
                 cache=cache,
                 expert_map=load_mapping(model_id=_fw_model_id),
                 router_flywheel=router_flywheel,
+                router_server_url=backend_url,
             )
             gate_thread = _spawn_gate_reader(llama_proc, gate)
             print("  gate:     online routing adaptation (LLAMA_EXPERT_LOG) enabled")

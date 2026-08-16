@@ -1,7 +1,7 @@
-# moe-l2 Supported Models — Measured Summary (updated 2026-08-14)
+# moe-l2 Supported Models — Measured Summary (updated 2026-08-16)
 
 > All figures are reproducible measurements from the full moe-l2 pipeline (proxy + L2 cache + host-buffer GPU direct compute + selective pin/on-demand pin).
-> **2026-08-14: bins-v0.4.1 fixed build (P0 cache-race fixed) — all speed figures re-measured on 4090/2080 Ti; the old 2026-08-10 bins-v0.4.0 numbers (145.63/74.99/87.25/47.24/35.96…) were garbage-output inflated and are void.** 5090 pending re-measure; V4 has no valid speed data until a Q4 quant is available.
+> **2026-08-16: bins-v0.5.0 + C-scheme (per-domain table switch) — all speed figures re-measured on 4090/2080 Ti/5090 with clean output verification.** The old 2026-08-14 bins-v0.4.1 numbers (133.2/44-48) and the P0-void 5090 figures (135.57/76.41) are replaced by real v0.5.0 data. V4 still has no valid speed data until a Q4 quant is available.
 > Test conditions: 64-128 tokens per request, n_predict=128, c=2048-8192, `GGML_OP_OFFLOAD_MIN_BATCH=1`, `GGML_CUDA_EXPERT_CACHE=1`.
 > Links to the detailed per-model reports are at the end of this document.
 
@@ -9,21 +9,21 @@
 
 | Model | Parameters | File | Quantization | Experts (active) | GPU VRAM | Host RSS | Speed | Verified on |
 |------|------|------|------|------------|----------|----------|------|----------|
-| DeepSeek-V2-Lite | 16B MoE | 6 GB | Q2_K | 64 (top-6) | **~10 GB** | **~6.7 GB** | **133.2 t/s** (4090) / 85.25 (2080 Ti) | RTX 4090 / 2080 Ti / 3080 Ti / 5090 |
-| Qwen3.6-35B-A3B | 32B MoE | 11 GB | UD-IQ2_M | 256 (top-8) | **~9.3 GB** | **~11.4 GB** | **44-48 t/s** (4090) / 30.87 (2080 Ti, locked) | RTX 4090 / 2080 Ti / 3080 Ti / 5090 |
+| DeepSeek-V2-Lite | 16B MoE | 6 GB | Q2_K | 64 (top-6) | **~10 GB** | **~6.7 GB** | **127-137 t/s** (4090, v0.5.0 C-scheme) / 83-88 (2080 Ti) / **145-153 (5090, real SM120a)** | RTX 4090 / 2080 Ti / 5090 |
+| Qwen3.6-35B-A3B | 32B MoE | 11 GB | UD-IQ2_M | 256 (top-8) | **~5.4 GB** | **~8.4-10.9 GB** | **20-34 t/s** (4090, v0.5.0 C-scheme mixed-domain) / 13-25 (2080 Ti) / **45-51 (5090, real SM120a)** | RTX 4090 / 2080 Ti / 5090 |
 | DeepSeek-V4-Flash | **157B MoE** | **85 GB** (3 shards) | UD-IQ2_M | 256 (top-6) | **16.5-16.7 GB** | **17.5-26.8 GB** (on-demand/selective pin) | ⚠️ **no valid speed data** — UD-IQ2_M 2-bit quantization degrades to garbage output (vanilla also affected); waiting for Q4 quant | RTX 4090 |
 | Mixtral-8x7B | 47B MoE | ~16 GB | Q4_K_M | 8 (top-2) | 2.2-2.9 GB | — | 3.7 t/s* | RTX 4090 (cache test conditions) |
 | Qwen3-235B-A22B | 235B MoE | 85.7 GB | Q2_K | 128 (top-8) | **13.9 GB** | **54.7 GB** (selective pin) | **~3.9 t/s** (steady state, 4090) | RTX 4090 |
 
 \* Mixtral figures are from the bare llama-server cache-benefit test (experts computed on CPU, not the host-buffer GPU direct-compute main path); reference only.
-\*\* 4090/2080 Ti data measured on the **2026-08-14 bins-v0.4.1 fixed full pipeline** (`moe-l2 start --gpu`, P0 cache-race fixed; old 2026-08-10 bins-v0.4.0 numbers were garbage-output inflated and are void); 5090 has no fixed-build data yet — ⚠️ P0-void, pending re-measure; 3080 Ti still uses the v3.1 multi-arch conditions (bins-v0.3.0).
+\*\* 4090/2080 Ti/5090 data measured on the **2026-08-16 bins-v0.5.0 + C-scheme full pipeline** (`moe-l2 start --gpu`, per-domain table switch); 5090 is real SM120a data replacing the P0-void figures; 3080 Ti still uses the v3.1 multi-arch conditions (bins-v0.3.0).
 
 ## VRAM savings (host-buffer expert GPU direct compute + selective/on-demand pin)
 
 | Model | Standard full load | moe-l2 | Savings | Speed retained |
 |------|-------------|--------|------|----------|
-| DeepSeek-V2-Lite | 23.3 GB VRAM, 65 t/s | **~10 GB, 133.2 t/s** (4090, 2026-08-14 bins-v0.4.1) | **57%** | 205% |
-| Qwen3.6-35B-A3B | OOM on 8 GB GPU | **~9.3 GB, 44-48 t/s** (4090, 2026-08-14) | — | ~pre-lazy 46.5 |
+| DeepSeek-V2-Lite | 23.3 GB VRAM, 65 t/s | **~10 GB, 127-137 t/s** (4090, 2026-08-16 v0.5.0 C-scheme) | **57%** | 205% |
+| Qwen3.6-35B-A3B | OOM on 8 GB GPU | **~5.4 GB, 20-34 t/s** (4090, 2026-08-16 v0.5.0 C-scheme) | — | ~pre-lazy 46.5 |
 | DeepSeek-V4-Flash | OOM on 10-11 GB GPUs | **16.5 GB VRAM / 17.5 GB RSS** (4090；⚠️ 35.96 t/s was UD-IQ2_M 2-bit garbage, no valid speed data) | — | on-demand/selective pin both work |
 
 ## Full-pipeline measurements (v3.1 fixed-expert-count eviction, RSS capped)
@@ -39,12 +39,12 @@
 
 | GPU | Architecture | DS-V2-Lite | Qwen3.6-A3B | VRAM |
 |-----|------|-----------|-------------|------|
-| RTX 2080 Ti | sm_75 | 85.25 t/s | 30.87 t/s (locked) | TBD |
+| RTX 2080 Ti | sm_75 | 83-88 t/s | 13-25 t/s | Qwen 5.2 GB / DS 9.8 GB |
 | RTX 3080 Ti | sm_86 | 12.25 t/s | 13.28 t/s | 1.1-2.2 GB |
-| RTX 5090 | sm_120a | ⚠️ P0-void, pending re-measure | ⚠️ P0-void, pending re-measure | TBD |
-| RTX 4090 | sm_89 | 133.2 t/s | 44-48 t/s | ~9.3-10 GB |
+| RTX 5090 | sm_120a | **145-153 t/s** | **45-51 t/s** | Qwen 5.6 GB / DS 10.2 GB |
+| RTX 4090 | sm_89 | 127-137 t/s | 20-34 t/s | Qwen 5.4 GB / DS 10.1 GB |
 
-\* 4090/2080 Ti measured on the 2026-08-14 bins-v0.4.1 fixed full pipeline (selective pin, P0 cache-race fixed); 5090 numbers (135.57/76.41) are P0-void (garbage-output inflated), pending re-measure on the fixed build; 3080 Ti measured with the v3.1 multi-arch package (bins-v0.3.0).
+\* 4090/2080 Ti/5090 measured on the 2026-08-16 bins-v0.5.0 + C-scheme full pipeline (per-domain table switch); 5090 is real SM120a data replacing the P0-void figures (135.57/76.41); 3080 Ti measured with the v3.1 multi-arch package (bins-v0.3.0).
 
 ## Key conclusions
 

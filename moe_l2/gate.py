@@ -24,8 +24,11 @@ L2 缓存优先级（LRU 智能增强），并按会话累积路由画像。
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
+import urllib.request
 from collections import defaultdict, deque
 
 logger = logging.getLogger("moe-l2-gate")
@@ -51,12 +54,19 @@ class RoutingProfiler:
         expert_map: dict | None = None,
         drift_threshold: float = 0.35,
         router_flywheel=None,
+        router_server_url: str | None = None,
     ):
         self.cache = cache
         self.expert_map = expert_map or {}
         self.drift_threshold = drift_threshold
         # [moe-l2 2026-08-09] 路由表数据飞轮（可选，None = 不启用，向后兼容）
         self.router_flywheel = router_flywheel
+        # [moe-l2 route-by-domain C 2026-08-15] llama-server 地址；设置后
+        # on_request(domain) 会把该领域的专家表 POST /moe-set-domain（动态换表）。
+        self.router_server_url = router_server_url
+        self._last_router_switch = 0.0
+        # 每层最多保留的专家数（与 build_router_map_file top-k 对齐）
+        self._router_top_k = 75
 
         # 窗口内激活记录（FIFO，用于漂移对比）
         self._window: deque[tuple[int, int]] = deque(maxlen=_WINDOW_LINES)
@@ -112,6 +122,11 @@ class RoutingProfiler:
                 self.router_flywheel.set_domain(domain)
             except Exception as e:
                 logger.warning("Router flywheel set_domain failed (non-fatal): %s", e)
+        # [moe-l2 route-by-domain C 2026-08-15] 动态换表：把该领域的专家表
+        # POST /moe-set-domain → llama-server 清旧 prefill、按新表重新 prefill。
+        # 放在 cache 判断之前：即使无 L2 cache 也能吃到领域专属 prefill 加速。
+        if self.router_server_url is not None:
+            self._switch_router_domain(domain)
         if self.cache is None or self.expert_map is None:
             return
         try:
@@ -119,6 +134,50 @@ class RoutingProfiler:
             logger.info("Gate: request domain=%s → promote_domain", domain)
         except Exception as e:
             logger.warning("Gate promote failed: %s", e)
+
+    def _switch_router_domain(self, domain: str) -> None:
+        """按预测领域动态换路由表（C 方案）。
+
+        从 flywheel 表（domain_router_map_flywheel_{model}.json）读取该领域
+        每层 top-k 专家，POST 到 llama-server /moe-set-domain。失败非致命，
+        只记日志（服务不中断）。
+        """
+        try:
+            if self.router_flywheel is None:
+                return
+            map_path = getattr(self.router_flywheel, "map_path", None)
+            if map_path is None or not map_path.exists():
+                logger.info("Gate: no flywheel map %s, skip router switch", map_path)
+                return
+            with open(map_path, encoding="utf-8") as f:
+                d = json.load(f)
+            domains = d.get("domains", {})
+            domdata = domains.get(domain)
+            if not domdata:
+                # 领域不在表里：退化为全领域并集（现有表内容），仅重置 prefill
+                logger.info("Gate: domain %s not in flywheel table, skip switch", domain)
+                return
+            plist = domdata.get("per_layer_domain_preferred", {})
+            k = self._router_top_k
+            experts = {
+                str(L): [int(e) for e in list(v)[:k]]
+                for L, v in sorted(plist.items(), key=lambda kv: int(kv[0]))
+            }
+            if not experts:
+                return
+            body = json.dumps({"domain": domain, "experts": experts}).encode("utf-8")
+            base = self.router_server_url
+            if not base:
+                return
+            url = base.rstrip("/") + "/moe-set-domain"
+            req = urllib.request.Request(url, data=body,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+            logger.info("Gate: router switch domain=%s layers=%d experts=%d",
+                        domain, len(experts), sum(len(v) for v in experts.values()))
+        except Exception as e:
+            logger.warning("Gate router switch failed (non-fatal): %s", e)
 
     # ── 画像查询 ─────────────────────────────────────────────
 

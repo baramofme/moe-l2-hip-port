@@ -154,10 +154,12 @@ def test_build_router_map_file_with_existing_table(tmp_path, monkeypatch):
     assert out and os.path.exists(out)
     with open(out) as f:
         lines = f.read().strip().splitlines()
-    assert lines[0].startswith("0 ")
-    assert lines[1].startswith("1 ")
+    # [moe-l2 2026-08-14] 第一行是 EXPERT_TOTAL 元数据头，之后才是层数据
+    assert lines[0].startswith("# EXPERT_TOTAL ")
+    assert lines[1].startswith("0 ")
+    assert lines[2].startswith("1 ")
     # top-k cap respected: all experts (≤5) kept under router_top_k=10
-    assert len(lines[0].split()) == 6
+    assert len(lines[1].split()) == 6
 
 
 def test_build_router_map_file_no_table_no_cli(tmp_path, capsys):
