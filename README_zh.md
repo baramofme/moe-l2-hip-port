@@ -16,12 +16,12 @@
 |----------|---------|-----------------|----------------------|
 | 10-11 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **127-137 t/s** |
 | **10-11 GB** | 7B 稠密模型 | **Qwen3.6-A3B (32B MoE) ✅** | **20-34 t/s** |
-| 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85 GB 文件）⚠️** | **UD-IQ2_M 2bit 量化退化乱码，无有效速度数据，等 Q4 量化版** |
+| 10-11 GB | — | **DeepSeek-V4-Flash（157B MoE，85 GB 文件）⚠️** | **N/A — 待 Q4 量化版** |
 | 24 GB | — | **Qwen3-235B-A22B（235B MoE，85.7 GB 文件）✅** | **~3.9 t/s** |
 
 > 速度 = RTX 4090 实测（2026-08-16，bins-v0.5.0 + C 方案按领域换表 + A3 cache，全链路 `moe-l2 start --gpu`）：DS-V2-Lite 127-137 t/s（单轮 134、长文 128）、Qwen3.6-A3B 20-34 t/s（混合领域；单场景预热 34/27/22/34）；2080 Ti 全链路（v0.5.0）：Qwen 13-25 t/s、DS-V2-Lite 83-88 t/s。**5090（SM120a，v0.5.0）：Qwen 45-51 t/s、DS 145-153 t/s**——真实数据，替换此前作废的 P0 假速度。Qwen3-235B-A22B：稳态 ~3.9 t/s（2026-08-11）。详见 [models-benchmark.md](references/zh/models-benchmark.md)。
 
-**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——显存 16.5-16.7GB（on-demand 兜底，RSS 17.5GB；selective pin v4_top100.map：RSS 26.8GB），2026-08-10 实测。⚠️ **速度数据无效：UD-IQ2_M 2bit 量化退化乱码，无有效速度数据，等 Q4 量化版。** 完整报告：[deepseek-v4-flash-verify-20260805.md](references/zh/deepseek-v4-flash-verify-20260805.md) · **Qwen3-235B-A22B（235B 参数 / 85.7GB 文件，128 专家、激活 8）在 24GB 卡上也能跑**——RTX 4090 实测稳态 **~3.9 t/s**（selective pin top-60/层，覆盖 98.5%）：24GB 显存 + 55GB 内存，RSS 80.8 → 54.7GB（-33%），2026-08-11 实测。完整报告：[qwen3-235b-a22b-q2k-benchmark.md](references/zh/qwen3-235b-a22b-q2k-benchmark.md) · **全部已测模型汇总：[models-benchmark.md](references/zh/models-benchmark.md)**
+**DeepSeek-V4-Flash（157B 参数 / 85GB 文件，256 专家、激活 6）也能跑**——显存 16.5-16.7GB（on-demand 兜底，RSS 17.5GB；selective pin v4_top100.map：RSS 26.8GB），2026-08-10 实测。⚠️ **速度待 Q4 量化版**（UD-IQ2_M 2bit 量化退化乱码）。 完整报告：[deepseek-v4-flash-verify-20260805.md](references/zh/deepseek-v4-flash-verify-20260805.md) · **Qwen3-235B-A22B（235B 参数 / 85.7GB 文件，128 专家、激活 8）在 24GB 卡上也能跑**——RTX 4090 实测稳态 **~3.9 t/s**（selective pin top-60/层，覆盖 98.5%）：24GB 显存 + 55GB 内存，RSS 80.8 → 54.7GB（-33%），2026-08-11 实测。完整报告：[qwen3-235b-a22b-q2k-benchmark.md](references/zh/qwen3-235b-a22b-q2k-benchmark.md) · **全部已测模型汇总：[models-benchmark.md](references/zh/models-benchmark.md)**
 
 ### 可视化演示（RTX 4090，2026-08-10）
 
@@ -57,7 +57,7 @@
 
 ![Selective pin RSS 对比——whole-pin 84GB vs selective pin 26.8GB vs on-demand 17.5GB，DeepSeek-V4-Flash UD-IQ2_M @ RTX 4090](docs/demo/fig5-selective-pin-rss.png)
 
-*实测（RTX 4090，2026-08-10，bins-v0.4.0）：whole-pin 84GB → selective pin 26.8GB（路由表 top-K）→ on-demand 兜底 17.5GB。RSS 降 68%。⚠️ V4 速度数据无效：UD-IQ2_M 2bit 量化退化乱码，无有效速度数据，等 Q4 量化版。另见 [速度 vs 内存散点图](docs/demo/fig5b-selective-pin-speed-rss.png)。*
+*实测（RTX 4090，2026-08-10，bins-v0.4.0）：whole-pin 84GB → selective pin 26.8GB（路由表 top-K）→ on-demand 兜底 17.5GB。RSS 降 68%。⚠️ V4 速度待 Q4 量化版。另见 [速度 vs 内存散点图](docs/demo/fig5b-selective-pin-speed-rss.png)。*
 
 **selective pin 是当前主路径（v0.4.0）**——路由表（每层 top-K 专家，如 `v4_top100.map` 43 层）预 pin 高频专家为 host-pinned，表外专家走 on-demand 兜底。不设环境变量时保持 whole-pin 默认；`moe-l2 start --gpu` 传 `--router-map <文件>` 或 `--router-top-k N`：
 
@@ -88,7 +88,7 @@ moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 | DS-V2-Lite（2080 Ti） | 78.3 t/s | **198.59** 总 | **188.25** 总 | 2.4-2.5× |
 | DeepSeek-V4-Flash（4090）⚠️ | 35.4-35.8 t/s | **89.66** 总 | **88.10** 总 | 2.5× |
 
-> ⚠️ V4 行速度数据无效：UD-IQ2_M 2bit 量化退化乱码，无有效速度数据，等 Q4 量化版重测。
+> ⚠️ V4 行速度待 Q4 量化版重测。
 
 并发总吞吐 = 单会话的 **2.3-2.5 倍**；跨领域 vs 同领域只差 **5-7%**——**无需按领域分 cache 池**。显存只随 slot 数线性增加（4 路 +2.9GB 全是 KV cache），内存几乎不动（+0.2GB）。**一台 AI PC 可以多人同时用。** 完整报告：[concurrent-cache-sharing-20260812.md](references/zh/concurrent-cache-sharing-20260812.md)
 
@@ -288,7 +288,7 @@ AirLLM 是通用型超大模型分层加载方案，以 **Transformer 整层**�
 - ✅ L2 缓存（mmap LRU、线程安全、异步预加载）
 - ✅ 透明代理（HTTP/SSE 转发）
 - ✅ CLI（start/stats/collect/embed-map/download-bins，自动模型检测，GPU 模式）
-- ✅ **selective pin + GPU 预填充（2026-08-10，v0.4.0，当前主路径）**：路由表驱动 top-K pin → V4 RSS **84.4 → 26.8GB**（on-demand 兜底 17.5GB；⚠️ V4 速度数据无效——UD-IQ2_M 2bit 量化退化乱码，无有效速度数据，等 Q4 量化版）；DS **127-137** / Qwen **20-34** t/s（4090，2026-08-16 bins-v0.5.0 C 方案）；GPU cache 预填充让冷启动 round1 10.7 → 19.7 t/s（+84%，⚠️ V4 数据同属 2bit 乱码退化，待 Q4 重测）。历史里程碑：host-buffer 直算（08-02）→ on-demand pin（08-07）→ selective pin（08-10）
+- ✅ **selective pin + GPU 预填充（2026-08-10，v0.4.0，当前主路径）**：路由表驱动 top-K pin → V4 RSS **84.4 → 26.8GB**（on-demand 兜底 17.5GB；⚠️ V4 速度待 Q4 量化版）；DS **127-137** / Qwen **20-34** t/s（4090，2026-08-16 bins-v0.5.0 C 方案）；GPU cache 预填充让冷启动 round1 10.7 → 19.7 t/s（+84%）。历史里程碑：host-buffer 直算（08-02）→ on-demand pin（08-07）→ selective pin（08-10）
 - ✅ cache 挂 sched 拷贝层（2026-08-02）：DS 类模型 Prompt 99 → 308 t/s（+211%，cache=0.25，VRAM 不变）；Qwen/Mixtral 无收益不开
 - ✅ **DeepSeek-V4-Flash（157B MoE）验证通过（2026-08-05）**：85GB 三片 GGUF 在 2080 Ti（11GB）上跑通——VRAM 8.3-9.1GB、RSS 靠专家页淘汰 v3.1 封顶（`MOE_L2_LRU_MAX_EXPERTS` 固定专家数 LRU）、多分片 GGUF 解析修复已随 0.7.0 发布。[完整报告](references/zh/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI 包（`moe-l2`）
