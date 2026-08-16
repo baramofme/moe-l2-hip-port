@@ -48,13 +48,13 @@ Live capture (2026-08-16, bins-v0.5.0 C-scheme): Qwen3.6-35B-A3B generating **2,
 
 > We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with **selective pin + C-scheme per-domain table switch** (bins-v0.5.0, 2026-08-16): experts stay in CPU RAM (zero VRAM), the router map pre-selects per-domain hot experts and the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **127-137 t/s** (~10.1 GB VRAM, ~6.4-6.7 GB RSS), Qwen3.6-A3B **20-34 t/s** (mixed-domain; ~5.4 GB VRAM, ~8.4-10.9 GB RSS). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/en/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/en/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark.md](references/en/models-benchmark.md)
 
-### Selective pin — 低内存主路径（2026-08-10, v0.4.0）
+### Selective pin — 低内存模式（V4 RSS 对比，2026-08-10 实测）
 
 ![Selective pin RSS comparison — whole-pin 84 GB vs selective pin 26.8 GB vs on-demand 17.5 GB, DeepSeek-V4-Flash UD-IQ2_M on RTX 4090](docs/demo/fig5-selective-pin-rss.png)
 
-*Measured on RTX 4090 (2026-08-10, bins-v0.4.0): whole-pin 84 GB → selective pin 26.8 GB (router-map top-K) → on-demand 17.5 GB. RSS −68%. ⚠️ V4 speed N/A — upstream deepseek4 CUDA bug (#25582). Also: [speed vs RSS scatter](docs/demo/fig5b-selective-pin-speed-rss.png).*
+*Measured on RTX 4090 (2026-08-10, bins-v0.4.0): whole-pin 84 GB → selective pin 26.8 GB (router-map top-K) → on-demand 17.5 GB. RSS −68% (V4 memory data; speed N/A — upstream deepseek4 CUDA bug [#25582](https://github.com/ggml-org/llama.cpp/issues/25582)). Also: [speed vs RSS scatter](docs/demo/fig5b-selective-pin-speed-rss.png).*
 
-**Selective pin is the current main path (v0.4.0)** — a router map (top-K experts per layer, e.g. `v4_top100.map` 43 layers) pre-pins the hot experts as host-pinned; experts outside the map fall back to on-demand pin. No env vars needed for whole-pin default; pass `--router-map <file>` or `--router-top-k N` to `moe-l2 start --gpu`:
+**Selective pin（低内存模式，v0.4.0 起；当前主路径为 v0.5.0 C 方案按领域换表）** — a router map (top-K experts per layer, e.g. `v4_top100.map` 43 layers) pre-pins the hot experts as host-pinned; experts outside the map fall back to on-demand pin. No env vars needed for whole-pin default; pass `--router-map <file>` or `--router-top-k N` to `moe-l2 start --gpu`:
 
 ```bash
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
