@@ -14,12 +14,12 @@
 
 | Your GPU | Normally fits | **With moe-l2** | **Measured speed** (RTX 4090) |
 |----------|--------------|-----------------|-------------------------------|
-| 10-11 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **127-137 t/s** |
-| **10-11 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** | **20-34 t/s** |
+| 10-11 GB | — | DeepSeek-V2-Lite (16B MoE) ✅ | **139-154 t/s** |
+| **10-11 GB** | 7B dense | **Qwen3.6-A3B (32B MoE) ✅** | **25.5-44.2 t/s** |
 | 10-11 GB | — | **DeepSeek-V4-Flash (157B MoE, 85 GB file) ⚠️** | **N/A — upstream llama.cpp deepseek4 CUDA expert bug ([#25582](https://github.com/ggml-org/llama.cpp/issues/25582))** |
 | 24 GB | — | **Qwen3-235B-A22B (235B MoE, 85.7 GB file) ✅** | **~3.9 t/s** |
 
-> Speed = RTX 4090 measured (2026-08-16, bins-v0.5.0 + C-scheme per-domain table switch + A3 cache, full-chain `moe-l2 start --gpu`): DS-V2-Lite 127-137 t/s (single-turn 134, long-context 128), Qwen3.6-A3B 20-34 t/s (mixed-domain; per-domain warm 34/27/22/34 across scenes). 2080 Ti full-chain (v0.5.0): Qwen 13-25 t/s, DS-V2-Lite 83-88 t/s. **5090 (SM120a, v0.5.0): Qwen 45-51 t/s, DS 145-153 t/s** — real data replacing the invalidated P0 numbers. Qwen3-235B-A22B: ~3.9 t/s steady (2026-08-11). See [models-benchmark.md](references/en/models-benchmark.md).
+> Speed = RTX 4090 measured (2026-08-19, bins-v0.6.0 per-slot-lock build, full-chain `moe-l2 start --gpu`): DS-V2-Lite 139-154 t/s (single-turn 141, long-context 139), Qwen3.6-A3B 25.5-44.2 t/s (mixed-domain). 2080 Ti full-chain (v0.6.0): Qwen 16.6-28.6 t/s, DS-V2-Lite 86-94 t/s. **5090 (SM120a, v0.6.0): Qwen 28-52.5 t/s, DS 141-151 t/s**. Qwen3-235B-A22B: ~3.9 t/s steady (2026-08-11). See [models-benchmark.md](references/en/models-benchmark.md).
 
 Without moe-l2, a 10-11 GB card **cannot load these models at all** — it OOMs immediately. With moe-l2, a 32B MoE fits in ~9.3 GB VRAM (on-demand pin experts on Qwen3.6-A3B, GPU compute). **DeepSeek-V4-Flash (157B params / 85 GB file, 256 experts, top-6) runs on a 10-11 GB card at 8.3-9.1 GB VRAM** — with selective pin (v4_top100.map), RSS **26.8 GB** (from 84.4 GB whole-pin, −68%); on-demand fallback RSS 17.5 GB (VRAM 16.5-16.7 GB, measured 2026-08-10). ⚠️ **No valid speed data — upstream llama.cpp bug** ([#25582](https://github.com/ggml-org/llama.cpp/issues/25582)): deepseek4 MoE expert layers on CUDA produce garbled output (reproduces on pure vanilla llama-server, no moe-l2 involved); UD-IQ2_M/Q4_K_XL both affected. Waiting for upstream fix. Full report: [deepseek-v4-flash-verify-20260805.md](references/en/deepseek-v4-flash-verify-20260805.md) · **Qwen3-235B-A22B (235B params / 85.7 GB file, 128 experts, top-8) runs on a 24 GB card at ~3.9 t/s steady** — selective pin (top-60/layer, 98.5% coverage): 24 GB VRAM + 55 GB RAM, RSS 80.8 → 54.7 GB (−33%), measured 2026-08-11. Full report: [qwen3-235b-a22b-q2k-benchmark.md](references/en/qwen3-235b-a22b-q2k-benchmark.md) · **All measured models: [models-benchmark.md](references/en/models-benchmark.md)**
 
@@ -30,7 +30,7 @@ Without moe-l2, a 10-11 GB card **cannot load these models at all** — it OOMs 
 |---|---|
 | ![Qwen VRAM comparison](examples/demo-assets/fig1-qwen-vram.png) | ![DS VRAM comparison](examples/demo-assets/fig2-ds-vram.png) |
 
-Summary: **~57-60% less VRAM** — a 10-11 GB card runs what used to need 24 GB (RTX 4090 measured 2026-08-16, bins-v0.5.0 C-scheme: DS 127-137 t/s @ ~10.1 GB / Qwen 20-34 t/s @ ~5.4 GB):
+Summary: **~57-60% less VRAM** — a 10-11 GB card runs what used to need 24 GB (RTX 4090 measured 2026-08-19, bins-v0.6.0: DS 139-154 t/s @ ~10.1 GB / Qwen 25.5-44.2 t/s @ ~6.7-7.2 GB):
 
 ![moe-l2 summary](examples/demo-assets/fig3-summary.png)
 
@@ -38,15 +38,15 @@ Live capture (2026-08-16, bins-v0.5.0 C-scheme): Qwen3.6-35B-A3B generating **2,
 
 [`examples/demo-assets/demo-vram-animation.mp4`](examples/demo-assets/demo-vram-animation.mp4) (45 s, 1280×720) · raw telemetry: [`examples/demo-assets/rec_data.csv`](examples/demo-assets/rec_data.csv) · full generated text: [`examples/demo-assets/rec_full.txt`](examples/demo-assets/rec_full.txt)
 
-### Benchmarked on RTX 4090 (2026-08-16, v0.5.0 C-scheme main path)
+### Benchmarked on RTX 4090 (2026-08-19, v0.6.0)
 
 | Mode | GPU VRAM | Gen speed | What it means |
 |------|----------|-----------|---------------|
 | Standard (all experts on GPU) | 23.3 GB | 65 t/s | Needs a 24 GB card |
-| **moe-l2** (selective pin experts, GPU compute) | **~5.4-10.1 GB** | **DS 127-137 t/s · Qwen 20-34 t/s** | **Fits in 10-11 GB cards** |
+| **moe-l2** (selective pin experts, GPU compute) | **~6.7-10.1 GB** | **DS 139-154 t/s · Qwen 25.5-44.2 t/s** | **Fits in 10-11 GB cards** |
 | **Savings** | **~57-60% less** | ~2× of full-GPU speed | Experts stay in CPU RAM, GPU reads them on demand |
 
-> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with **selective pin + C-scheme per-domain table switch** (bins-v0.5.0, 2026-08-16): experts stay in CPU RAM (zero VRAM), the router map pre-selects per-domain hot experts and the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **127-137 t/s** (~10.1 GB VRAM, ~6.4-6.7 GB RSS), Qwen3.6-A3B **20-34 t/s** (mixed-domain; ~5.4 GB VRAM, ~8.4-10.9 GB RSS). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/en/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/en/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark.md](references/en/models-benchmark.md)
+> We benchmarked **Qwen3.6-A3B** (32B MoE) and **DeepSeek-V2-Lite** (16B MoE, 64 experts) on RTX 4090 with **selective pin + per-domain table switch + A3 cache** (bins-v0.6.0 per-slot-lock build, 2026-08-19): experts stay in CPU RAM (zero VRAM), the router map pre-selects per-domain hot experts and the scheduler copies only the **activated** experts to GPU each step, hot experts are cached in VRAM. DS-V2-Lite **139-154 t/s** (~10.1 GB VRAM, ~6.4-6.7 GB RSS), Qwen3.6-A3B **25.5-44.2 t/s** (mixed-domain; ~6.7-7.2 GB VRAM, ~8.9-11.3 GB RSS). Full reports: [qwen3.6-a3b-iq2m-benchmark.md](references/en/qwen3.6-a3b-iq2m-benchmark.md) · [deepseek-v2-lite-q2k-benchmark.md](references/en/deepseek-v2-lite-q2k-benchmark.md) · [models-benchmark.md](references/en/models-benchmark.md)
 
 ### Selective pin — 低内存模式（V4 RSS 对比，2026-08-10 实测）
 
@@ -60,18 +60,18 @@ Live capture (2026-08-16, bins-v0.5.0 C-scheme): Qwen3.6-35B-A3B generating **2,
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
 ```
 
-### Multi-architecture binaries (bins-v0.5.0, 2026-08-16)
+### Multi-architecture binaries (bins-v0.6.0, 2026-08-19)
 
-One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.5.0 includes the **selective pin (router-map driven)** + **GPU cache prefill** + **on-demand pin main path** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + layered pin (`MOE_L2_PIN_LAYERS`) + A3 cache 2048 slots + cuda-libs (no libnccl — not needed for single-GPU) + **C-scheme: per-domain router table switch (`POST /moe-set-domain`)** + **P0 fix: expert-cache D2D copy includes padding + concurrent set lock** + **DS crash fix: cache slot resize on table switch** + **flywheel table persistence (A-fix, no more domain loss on restart)**.
+One binary for **all NVIDIA consumer GPUs** — GTX 1080 (sm_61) through RTX 50-series (sm_120a). Built with CUDA 12.8; no per-GPU compilation needed. `moe-l2 download-bins` fetches it automatically. bins-v0.6.0 includes the **selective pin (router-map driven)** + **GPU cache prefill** + **on-demand pin main path** + expert-page eviction v3.1 (`MOE_L2_LRU_MAX_EXPERTS=N`) + layered pin (`MOE_L2_PIN_LAYERS`) + A3 cache 32768 slots + cuda-libs (no libnccl — not needed for single-GPU) + **per-domain router table switch (`POST /moe-set-domain`)** + **per-slot lock optimization** (concurrent correctness restored — v0.5.0 was lock-free and DS concurrent output was garbage) + **soft_resize / retain-hot-experts (v2, default single-table; `MOE_L2_POOL_SIZE=3` opt-in)** + **VRAM-adaptive main table top-k (≤12G=top-75 / >12G=top-100)** + **proxy concurrency fixes (throttled domain switch + background retrain — DS long 500 gone)** + **flywheel table persistence (A-fix, no more domain loss on restart)** + **DEFAULT_TOP_K 100**.
 
 | GPU | Architecture | DS-V2-Lite gen | Qwen3.6-A3B gen | VRAM |
 |-----|-------------|----------------|-----------------|------|
-| RTX 2080 Ti | sm_75 (Turing) | 83-88 t/s | 13-25 t/s | Qwen 5.2 GB / DS 9.8 GB |
+| RTX 2080 Ti | sm_75 (Turing) | 86-94 t/s | 16.6-28.6 t/s | Qwen 5.3 GB / DS 10.0 GB |
 | RTX 3080 Ti | sm_86 (Ampere) | 12.25 t/s | 13.28 t/s | ~1.1-2.2 GB |
-| RTX 4090* | sm_89 (Ada) | 127-137 t/s | 20-34 t/s | Qwen 5.4 GB / DS 10.1 GB |
-| RTX 5090 | sm_120a | **145-153 t/s** | **45-51 t/s** | Qwen 5.6 GB / DS 10.2 GB |
+| RTX 4090* | sm_89 (Ada) | 139-154 t/s | 25.5-44.2 t/s | Qwen 6.7-7.2 GB / DS 10.1 GB |
+| RTX 5090 | sm_120a | **141-151 t/s** | **28-52.5 t/s** | Qwen 5.6 GB / DS 10.2 GB |
 
-\* All rows = **bins-v0.5.0 + C-scheme full-chain** (2026-08-16, `moe-l2 start --gpu`, per-domain table switch + A3 cache). 4090: Qwen 20-34 t/s (mixed-domain single-turn; warm per-scene 34/27/22/34) / DS 127-137 t/s (single-turn 134, long-context 128), VRAM 5.4/10.1 GB, RSS 8.4-10.9 / 6.4-6.7 GB; 2080 Ti: Qwen 13-25 / DS 83-88 t/s, VRAM 5.2/9.8 GB; 5090: Qwen 45-51 (peak 50.9) / DS 145-153 (peak 153.3) t/s, VRAM 5.6/10.2 GB — real SM120a data replacing the invalidated P0 numbers (76.41/135.57). 3080 Ti row remains v3.1 multi-arch (bins-v0.3.0). All outputs verified clean (no garbage) on all three cards, 2026-08-16.
+\* All rows = **bins-v0.6.0 full-chain** (2026-08-19, `moe-l2 start --gpu`, per-domain table switch + A3 cache, default single-table). 4090: Qwen 25.5-44.2 t/s (mixed-domain) / DS 139-154 t/s (single-turn 141, long-context 139), VRAM 6.7-7.2/10.1 GB, RSS 8.9-11.3 / 6.4-6.7 GB; 2080 Ti: Qwen 16.6-28.6 / DS 86-94 t/s, VRAM 5.3/10.0 GB; 5090: Qwen 28-52.5 (peak 52.5) / DS 141-151 t/s, VRAM 5.6/10.2 GB. 3080 Ti row remains v3.1 multi-arch (bins-v0.3.0). All outputs verified clean (no garbage) on all three cards, 2026-08-19.
 
 ### Concurrent requests — shared cache, no speed loss (2026-08-12)
 
@@ -247,7 +247,7 @@ Options:
 - `--port 11435` (default)
 - `--gpu`: enable GPU mode (requires CUDA + NVIDIA GPU; spawns bundled on-demand pin llama-server on 11436)
 
-> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.6 GB multi-architecture on the `bins-v0.5.0` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
+> **GPU binaries**: Not tracked in git (bundled as `llama_bins.tar.gz`, ~1.6 GB multi-architecture on the `bins-v0.6.0` release — sm_61/75/86/89/120a, one binary for all NVIDIA consumer GPUs, ships cuda-libs). Fetched at runtime via `moe-l2 download-bins`. When you `pip install moe-l2`, binaries are included. For git-clone users, run `moe-l2 download-bins` to fetch them from GitHub Release.
 
 ## Platform requirements
 
@@ -261,17 +261,17 @@ Options:
 | Metric | Standard | With moe-l2 |
 |--------|----------|-------------|
 | Prompt processing (DS-V2-Lite) | 110 t/s | 99 t/s · **308 t/s** (sched-cache=0.25) |
-| Generation speed (DS-V2-Lite) | 65 t/s | 127-137 t/s · 39.2 t/s (sched-cache=0.25, 08-02) |
-| Generation speed (Qwen3.6-A3B) | — | 20-34 t/s |
+| Generation speed (DS-V2-Lite) | 65 t/s | 139-154 t/s · 39.2 t/s (sched-cache=0.25, 08-02) |
+| Generation speed (Qwen3.6-A3B) | — | 25.5-44.2 t/s |
 | VRAM used (DS-V2-Lite) | 23.3 GB | **~10 GB** |
 
-The speed tradeoff is intentional and small: expert weights live in CPU RAM (lazy mmap, zero VRAM) and are pinned on first touch — the GPU reads them directly via PCIe DMA, hot experts are cached in VRAM (A3 LRU), and cold pages are evicted to keep RSS capped. On the 2026-08-16 bins-v0.5.0 C-scheme build, DS-V2-Lite reaches 127-137 t/s gen at ~10.1 GB VRAM — faster than full-GPU at ~43% of the VRAM.
+The speed tradeoff is intentional and small: expert weights live in CPU RAM (lazy mmap, zero VRAM) and are pinned on first touch — the GPU reads them directly via PCIe DMA, hot experts are cached in VRAM (A3 LRU), and cold pages are evicted to keep RSS capped. On the 2026-08-19 bins-v0.6.0 build, DS-V2-Lite reaches 139-154 t/s gen at ~10.1 GB VRAM — faster than full-GPU at ~43% of the VRAM.
 
 ## Expert offload & cache fast path (llama.cpp)
 
 Beyond the proxy layer, moe-l2 ships llama.cpp patches that compile expert handling directly into the CUDA backend — no proxy needed. Two mechanisms:
 
-**1. Selective pin expert GPU fast path (2026-08-10, current main path).** Expert tensors live in CPU RAM via lazy mmap (zero VRAM). A router map (top-K experts per layer) pre-pins the hot experts as host-pinned (`cudaHostRegister`), so the GPU reads them directly via PCIe DMA; experts outside the map fall back to on-demand pin. Hot experts are cached in VRAM (A3 LRU, 2048 slots) and cold pages are evicted (v3.1) to keep RSS capped. Measured (2026-08-16, bins-v0.5.0 C-scheme): DS 127-137 / Qwen 20-34 t/s (4090, mixed-domain). V4: ⚠️ speed N/A — upstream deepseek4 CUDA expert bug (#25582).
+**1. Selective pin expert GPU fast path (2026-08-10, current main path).** Expert tensors live in CPU RAM via lazy mmap (zero VRAM). A router map (top-K experts per layer) pre-pins the hot experts as host-pinned (`cudaHostRegister`), so the GPU reads them directly via PCIe DMA; experts outside the map fall back to on-demand pin. Hot experts are cached in VRAM (A3 LRU, 32768 slots max) and cold pages are evicted (v3.1) to keep RSS capped. Measured (2026-08-19, bins-v0.6.0): DS 139-154 / Qwen 25.5-44.2 t/s (4090, mixed-domain). V4: ⚠️ speed N/A — upstream deepseek4 CUDA expert bug (#25582).
 
 **2. A3 LRU expert cache (historical, `--expert-cache`).** An LRU cache that keeps recent experts on GPU. In the old `--cpu-moe` CPU-compute architecture it cut VRAM from 6.6 GB → 1.2 GB (5.64×) at 8.2 t/s. In the current on-demand pin architecture the cache is hooked into the scheduler copy layer (`GGML_CUDA_EXPERT_CACHE`) and only pays off for small, frequently-hit experts (see below).
 
@@ -334,7 +334,8 @@ Automated CI runs on every push (GitHub Actions, Python 3.10–3.13): `ruff` lin
 - ✅ L2 cache (mmap LRU, thread-safe, async preload)
 - ✅ Transparent proxy (HTTP/SSE forwarding)
 - ✅ CLI with auto model detection, GPU mode, and `collect` (routing data → expert map)
-- ✅ **Selective pin + GPU prefill (2026-08-10, v0.4.0, current main path)**: router-map-driven top-K pin → V4 RSS **84.4 → 26.8 GB** (on-demand fallback 17.5 GB; ⚠️ V4 speed N/A — upstream deepseek4 CUDA bug #25582); DS **127-137** / Qwen **20-34** t/s on 4090 (2026-08-16, bins-v0.5.0 C-scheme); GPU cache prefill lifts cold-start round1 10.7 → 19.7 t/s (+84%). (Prior milestones: host-buffer fast path 08-02 → on-demand pin 08-07 → selective pin 08-10.)
+- ✅ **Selective pin + GPU prefill (2026-08-10, v0.4.0, current main path)**: router-map-driven top-K pin → V4 RSS **84.4 → 26.8 GB** (on-demand fallback 17.5 GB; ⚠️ V4 speed N/A — upstream deepseek4 CUDA bug #25582); DS **139-154** / Qwen **25.5-44.2** t/s on 4090 (2026-08-19, bins-v0.6.0); GPU cache prefill lifts cold-start round1 10.7 → 19.7 t/s (+84%). (Prior milestones: host-buffer fast path 08-02 → on-demand pin 08-07 → selective pin 08-10.)
+- ✅ **bins-v0.6.0 (2026-08-19)**: cache slot cap 16384→32768; per-slot lock optimization (concurrent correctness restored — v0.5.0 lock-free DS concurrent was garbage; same-machine A/B 4090: Qwen 31.76 vs 32.42 ≈parity, **DS 140.43 vs 113.15 +24%**); retain-hot-experts v2 (default single-table, `MOE_L2_POOL_SIZE=3` opt-in); VRAM-adaptive main top-k (≤12G=75 / >12G=100); proxy concurrency fixes (DS long 500 gone). Three-card regression (2080Ti/4090/5090) all outputs clean.
 - ✅ Expert cache boundary verified on Mixtral 8x7B / RTX 4090 (2026-08-02, sched-cache): cache benefit = expert size × hit rate — DS-V2-Lite (1.55 MB, top-6) gets Prompt +211% / Gen +5% at cache=0.25; Qwen (~1 MB) and Mixtral (252 MB, top-2) get no gain. Recommended: cache=0.25 for DS-class, off otherwise.
 - ✅ **DeepSeek-V4-Flash (157B MoE) verified (2026-08-05)**: 85 GB 3-shard GGUF runs on 2080 Ti (11 GB) — VRAM 8.3-9.1 GB, RSS capped by expert-page eviction v3.1 (fixed-expert-count LRU, `MOE_L2_LRU_MAX_EXPERTS`), multi-shard GGUF parsing fix shipped. [Full report](references/en/deepseek-v4-flash-verify-20260805.md)
 - ✅ PyPI package (`moe-l2`)

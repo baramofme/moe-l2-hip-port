@@ -6,6 +6,26 @@ Format: Keep a Changelog 1.1 style — Added / Changed / Fixed.
 
 ---
 
+## [0.10.0] - 2026-08-22
+
+### Added
+- **Per-slot lock optimization (C++ expert-cache)** — replaces the global `std::mutex` with per-slot spinlocks: lock-free prescan get + single-slot lock (re-validate + atomic clock LRU update); locked-victim set with double-check (≤16 re-selects); resize/soft_resize/free lock all slots. Removes global-lock serialization (get scans thousands of slots per token) and **restores concurrent correctness** — v0.5.0 shipped lock-free and DS concurrent output was guaranteed garbage. Same-machine A/B (4090): Qwen 31.76 vs unlocked 32.42 t/s (≈parity, noise), **DS 140.43 vs unlocked 113.15 t/s (+24%)**.
+- **`soft_resize` + retain-hot-experts v2** — domain switch grows the cache instead of clearing it; old-domain hot experts stay resident (switch-back first request +30% measured on 2080Ti Qwen). Default single-table after 4090 measurement (retain pool cost ~20% on DS in mixed alternating domains); opt-in via `MOE_L2_POOL_SIZE=3` / `MOE_L2_RETAIN_TOP_K`.
+- **VRAM-adaptive main table top-k** (`vram_adaptive.py`) — ≤12G cards use top-75, >12G use top-100 automatically.
+- **Cache slot cap doubled** — `EXPERT_CACHE_MAX_SLOTS` 16384 → 32768.
+- `domain_router_flywheel.py` `DEFAULT_TOP_K` 75 → 100.
+
+### Fixed
+- **Proxy concurrency deadlock + DS long-ctx HTTP 500** — domain switch was a synchronous per-request `POST /moe-set-domain` (10s timeout) and `maybe_retrain` re-trained synchronously (TF-IDF + LinearSVC, seconds); both now run throttled (30s same-domain window) / in background threads.
+- v0.5.0 lock-free expert cache concurrent garbage (DS) — fixed by per-slot locks above.
+
+### Changed
+- `_DEFAULT_BINS_TAG` → `bins-v0.6.0` — multi-arch (sm_61/75/86/89/120a, CUDA 12.8, no NCCL), includes per-slot locks + soft_resize + MAX_SLOTS 32768 + proxy concurrency fixes.
+- README (EN/ZH): speed tables updated to v0.6.0 full-chain (2026-08-19): 4090 DS 139-154 / Qwen 25.5-44.2 t/s; 2080 Ti DS 86-94 / Qwen 16.6-28.6 t/s; 5090 DS 141-151 / Qwen 28-52.5 t/s. All outputs verified clean on all three cards.
+- Default retain-pool off (single-table), matching v0.5.0 C-scheme behaviour.
+
+---
+
 ## [0.8.1] - 2026-08-14
 
 ### Fixed
