@@ -54,7 +54,7 @@ Live capture (2026-08-16, bins-v0.5.0 C-scheme): Qwen3.6-35B-A3B generating **2,
 
 *Measured on RTX 4090 (2026-08-10, bins-v0.4.0): whole-pin 84 GB → selective pin 26.8 GB (router-map top-K) → on-demand 17.5 GB. RSS −68% (V4 memory data; speed N/A — upstream deepseek4 CUDA bug [#25582](https://github.com/ggml-org/llama.cpp/issues/25582)). Also: [speed vs RSS scatter](docs/demo/fig5b-selective-pin-speed-rss.png).*
 
-**Selective pin（低内存模式，v0.4.0 起；当前主路径为 v0.5.0 C 方案按领域换表）** — a router map (top-K experts per layer, e.g. `v4_top100.map` 43 layers) pre-pins the hot experts as host-pinned; experts outside the map fall back to on-demand pin. No env vars needed for whole-pin default; pass `--router-map <file>` or `--router-top-k N` to `moe-l2 start --gpu`:
+**Selective pin（低内存模式，v0.4.0 起；当前主路径为 v0.6.0 按领域换表）** — a router map (top-K experts per layer, e.g. `v4_top100.map` 43 layers) pre-pins the hot experts as host-pinned; experts outside the map fall back to on-demand pin. No env vars needed for whole-pin default; pass `--router-map <file>` or `--router-top-k N` to `moe-l2 start --gpu`:
 
 ```bash
 moe-l2 start --model model.gguf --gpu --router-map v4_top100.map
