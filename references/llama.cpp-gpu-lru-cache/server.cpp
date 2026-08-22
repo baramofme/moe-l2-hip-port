@@ -13,6 +13,7 @@
 #include "log.h"
 
 #include <atomic>
+#include <algorithm>  // std::find (retain-hot-experts v1 layer merge)
 #include <clocale>
 #include <exception>
 #include <map>
@@ -32,6 +33,7 @@ extern "C" {
     void ggml_backend_router_reset_prefill();
     void ggml_backend_router_clear();
     void ggml_backend_router_resize_cache(int new_n_slots);
+    void ggml_backend_router_soft_resize_cache(int new_n_slots);  // [moe-l2 retain-hot-experts v1 2026-08-16]
 }
 
 static std::function<void(int)> shutdown_handler;
@@ -283,8 +285,11 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
 
     // [moe-l2 route-by-domain C 2026-08-15] 按预测领域动态换路由表。
-    // body: {"domain": "ai", "experts": {"0": [6,11,29,...], "1": [...]}}
-    // 流程：清空旧表 → 逐层 set_layer → reset_prefill（下次请求按新表重新 prefill）。
+    // body: {"domain": "ai", "experts": {"0": [6,11,29,...], "1": [...]},
+    //        "retain": {"0": [3,17,...], ...}}   ← retain 可选：保留的旧领域热专家
+    // 流程：主表(experts) ∪ 保留(retain) → soft_resize_cache（不清已有槽）→
+    //       清路由表 → 逐层 set_layer → reset_prefill（下次请求按新表 prefill，
+    //       已在 cache 的专家被 prefill 查重跳过）。
     // 仅在有 MOE_L2_ROUTER_FILE 的场景有意义；无路由表时 ggml_backend_router_clear 幂等无害。
     ctx_http.post("/moe-set-domain", ex_wrapper([](const server_http_req & req) -> server_http_res_ptr {
         auto res = std::make_unique<server_http_res>();
@@ -302,25 +307,37 @@ int llama_server(common_params & params, int argc, char ** argv) {
             return res;
         }
         std::string domain = body["domain"].get<std::string>();
-        // [moe-l2 route-by-domain C 2026-08-15 方案4] 先统计新表总专家数，
-        // 动态调整 cache 槽数（清空旧槽 + 重设 n_slots），再逐层换表。
-        // 解决：flywheel 表 rebuild 变大后 payload 超过启动时槽数 → LRU 反复
-        // 逐出且不释放显存 → DS 大专家场景显存峰值超限 OOM。
-        int total_experts = 0;
+        // 解析主表（experts）与可选保留表（retain），按层合并去重。
+        // [moe-l2 retain-hot-experts v1 2026-08-16] retain 是旧领域 top-X 热专家，
+        // 合并进路由表让它们继续参与 prefill/命中；soft_resize 保证 cache 不清空，
+        // 旧领域专家留在 cache → 领域回切时直接命中（免全量重 prefill）。
         std::map<int, std::vector<int32_t>> new_map;
-        for (auto it = body["experts"].begin(); it != body["experts"].end(); ++it) {
-            int layer = std::atoi(it.key().c_str());
-            if (layer < 0 || !it.value().is_array()) continue;
-            std::vector<int32_t> experts;
-            for (auto & e : it.value()) {
-                if (e.is_number_integer()) experts.push_back(e.get<int32_t>());
+        int total_experts = 0;
+        auto parse_layer_map = [&](const json & src) {
+            if (!src.is_object()) return;
+            for (auto it = src.begin(); it != src.end(); ++it) {
+                int layer = std::atoi(it.key().c_str());
+                if (layer < 0 || !it.value().is_array()) continue;
+                auto & dst = new_map[layer];
+                for (auto & e : it.value()) {
+                    if (!e.is_number_integer()) continue;
+                    int32_t id = e.get<int32_t>();
+                    if (std::find(dst.begin(), dst.end(), id) == dst.end()) {
+                        dst.push_back(id);
+                    }
+                }
             }
-            if (!experts.empty()) {
-                new_map[layer] = std::move(experts);
-                total_experts += (int) new_map[layer].size();
-            }
+        };
+        parse_layer_map(body["experts"]);
+        if (body.contains("retain")) {
+            parse_layer_map(body["retain"]);
         }
-        ggml_backend_router_resize_cache(total_experts * 3);  // 3 tensors per expert
+        for (auto & [layer, experts] : new_map) {
+            total_experts += (int) experts.size();
+        }
+        // [moe-l2 retain-hot-experts v1 2026-08-16] soft resize：只调容量、不清槽，
+        // 保留旧领域专家在 cache 里。缩小场景超出的槽由 LRU 自然逐出。
+        ggml_backend_router_soft_resize_cache(total_experts * 3);  // 3 tensors per expert
         ggml_backend_router_clear();
         int total_layers = 0;
         for (auto & [layer, experts] : new_map) {
@@ -328,11 +345,12 @@ int llama_server(common_params & params, int argc, char ** argv) {
             total_layers++;
         }
         ggml_backend_router_reset_prefill();
-        SRV_INF("moe-set-domain: domain=%s layers=%d experts=%d\n",
+        SRV_INF("moe-set-domain: domain=%s layers=%d experts=%d (retain-hot-experts v1)\n",
                 domain.c_str(), total_layers, total_experts);
         res->status = 200;
         res->data   = json{{"ok", true}, {"domain", domain},
-                           {"layers", total_layers}, {"experts", total_experts}}.dump();
+                           {"layers", total_layers}, {"experts", total_experts},
+                           {"retain", body.contains("retain")}}.dump();
         return res;
     }));
 

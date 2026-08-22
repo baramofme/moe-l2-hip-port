@@ -23,7 +23,7 @@
 // (measured: hit=0 / miss=156189 over 150 tokens). The CLI now injects an
 // exact count (MOE_L2_CACHE_SLOTS = n_layers * top_k * 3, e.g. 43*100*3 =
 // 12900 for top-k=100), so the cap only guards against runaway configs.
-#define EXPERT_CACHE_MAX_SLOTS 16384
+#define EXPERT_CACHE_MAX_SLOTS 32768
 
 // Lazy-init the expert cache from the GGML_CUDA_EXPERT_CACHE env var.
 // Slot count is computed as a fraction of the model's per-layer expert
@@ -86,3 +86,7 @@ void ggml_cuda_expert_cache_free(void);
 // [moe-l2 route-by-domain C 2026-08-15] 运行时调整 cache 槽数：
 // 清空释放全部槽（旧领域数据作废），把 n_slots 设为 new_n_slots。
 void ggml_cuda_expert_cache_resize(int new_n_slots);
+
+// [moe-l2 retain-hot-experts v1 2026-08-16] 软调整 cache 槽数：
+// 只改 n_slots 容量，**不清空已有槽**（换表保留热专家用）。
+void ggml_cuda_expert_cache_soft_resize(int new_n_slots);

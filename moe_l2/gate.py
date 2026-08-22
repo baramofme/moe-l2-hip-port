@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import threading
+import time
 import urllib.request
 from collections import defaultdict, deque
 
@@ -37,6 +40,58 @@ _EXPERT_LINE_RE = re.compile(r"EXPERT\|L(\d+)\|T(\d+): (.*)")
 
 # 滑动窗口：保留最近 N 层-行数的激活记录做漂移检测
 _WINDOW_LINES = 400
+
+# [moe-l2 retain-hot-experts v2 2026-08-16] 多领域保留池默认参数
+# 主表 top-K 显存自适应档位（Qwen 实测口径，v2 方案第三节档位表）：
+#   ≤4G: 主表 20 + 保留 10 + 池 2；≤6G: 50+30+2；≤12G: 75+30+3（2080Ti 11GB 实测 7.7GB）；
+#   >12G: 100+30+3（12G+ 需 MAX_SLOTS 提升至 20400 槽，见待办）
+_RETAIN_TOP_K_DEFAULT = 30
+_POOL_SIZE_DEFAULT = 3
+# 主表 top-K 按显存自适应（MB → top-k），与 router_table COVERAGE_TABLE 对齐
+_MAIN_TOP_K_VRAM = (
+    (4096, 20),
+    (6144, 50),
+    (12288, 75),  # 8G 档覆盖到 12G（2080Ti 11GB 实测走此档）
+    (float("inf"), 100),
+)
+
+
+def _main_top_k_for_vram(vram_total_mb: int) -> int:
+    """按显存总量（MB）返回主表 top-K 档位。探测失败（0）按 8G 档 75。"""
+    if vram_total_mb <= 0:
+        return 75
+    for limit, k in _MAIN_TOP_K_VRAM:
+        if vram_total_mb <= limit:
+            return k
+    return 100
+
+
+def _retain_params(vram_total_mb: int) -> tuple[int, int]:
+    """按显存返回 (retain_top_k, pool_size)。
+
+    [moe-l2 retain-hot-experts v2 2026-08-17 拍板：默认单表运行]
+    保留池实测结论（4090，2026-08-17）：DS 换表 payload 变大（主表+3领域并集）
+    导致净亏 ~20%（89-103 vs 单表 116-127 t/s）；Qwen 混合场景也 -7~12%，
+    回切收益（+20.5%）不足以抵消 → 默认关闭保留池（pool_size=1、retain=0），
+    行为等同 v0.5.0 C 方案单表。环境变量 MOE_L2_RETAIN_TOP_K / MOE_L2_POOL_SIZE
+    仍可临时开启（如 MOE_L2_POOL_SIZE=3）。
+    """
+    return 0, 1
+
+
+def _detect_vram_mb() -> int:
+    """探测 GPU 总显存（MB）。nvidia-smi 失败/无卡返回 0（按 8G 档兜底）。"""
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        if out:
+            return int(float(out.splitlines()[0]))
+    except Exception:
+        pass
+    return 0
 
 
 class RoutingProfiler:
@@ -54,6 +109,8 @@ class RoutingProfiler:
         drift_threshold: float = 0.35,
         router_flywheel=None,
         router_server_url: str | None = None,
+        retain_top_k: int | None = None,
+        pool_size: int | None = None,
     ):
         self.cache = cache
         self.expert_map = expert_map or {}
@@ -64,8 +121,29 @@ class RoutingProfiler:
         # on_request(domain) 会把该领域的专家表 POST /moe-set-domain（动态换表）。
         self.router_server_url = router_server_url
         self._last_router_switch = 0.0
-        # 每层最多保留的专家数（与 build_router_map_file top-k 对齐）
-        self._router_top_k = 75
+
+        # [moe-l2 retain-hot-experts v2 2026-08-16] 多领域保留池参数。
+        # 主表 top-K + 保留 top-X + 池大小按显存自适应（v2 方案第三节档位表）。
+        # 显式参数 > 环境变量 > 显存自适应默认。
+        vram_mb = _detect_vram_mb()
+        main_top_k = int(os.environ.get(
+            "MOE_L2_MAIN_TOP_K", _main_top_k_for_vram(vram_mb)))
+        if retain_top_k is None:
+            retain_top_k = int(os.environ.get(
+                "MOE_L2_RETAIN_TOP_K", _retain_params(vram_mb)[0]))
+        if pool_size is None:
+            pool_size = int(os.environ.get(
+                "MOE_L2_POOL_SIZE", _retain_params(vram_mb)[1]))
+        # 每层最多保留的专家数（主表，与 build_router_map_file top-k 对齐）
+        self._router_top_k = main_top_k
+        # 保留池：每领域每层保留的专家数 + 池大小
+        self._retain_top_k = retain_top_k
+        self._pool_size = pool_size
+        # 领域历史队列（当前 + 上一个，用于构造保留池）
+        self._domain_history: deque[str] = deque(maxlen=2)
+        logger.info(
+            "Gate: retain pool v2 vram=%dMB main_top_k=%d retain_top_k=%d pool_size=%d",
+            vram_mb, self._router_top_k, self._retain_top_k, self._pool_size)
 
         # 窗口内激活记录（FIFO，用于漂移对比）
         self._window: deque[tuple[int, int]] = deque(maxlen=_WINDOW_LINES)
@@ -78,6 +156,37 @@ class RoutingProfiler:
 
         self._log_lines = 0
         self._last_drift: float = 0.0
+
+        # [moe-l2 2026-08-19 proxy 并发卡死修复] 换表节流 + 互斥 + 后台线程。
+        # 根因：旧版 on_request 每次请求都同步 POST /moe-set-domain（timeout=10s），
+        # llama-server 端清槽 + 重 prefill 120 条耗时数秒 → 并发请求全部阻塞在
+        # 换表上排队卡死（2080Ti 实测：并发测试基线请求后无响应）。
+        # 修复：① 同一领域 30s 内不重复换表（旧 _last_router_switch 从未使用，
+        # 节流从未生效）；② 全局互斥，已有换表在跑则跳过（请求转发用当前表，
+        # prefill 未换只影响预热不影响正确性）；③ 换表放后台 daemon 线程，
+        # 请求线程不被阻塞。
+        self._router_switch_lock = threading.Lock()
+        self._router_last_switch: dict[str, float] = {}
+
+    def _schedule_router_switch(self, domain: str) -> None:
+        """节流 + 互斥 + 后台执行动态换表（不阻塞请求线程）。"""
+        now = time.time()
+        if now - self._router_last_switch.get(domain, 0.0) < 30.0:
+            return
+        if not self._router_switch_lock.acquire(blocking=False):
+            return  # 已有换表在跑 → 跳过本次（不排队，避免堆积）
+        self._router_last_switch[domain] = now
+
+        def _do() -> None:
+            try:
+                self._switch_router_domain(domain)
+            except Exception as e:  # noqa: BLE001 - 后台线程兜底
+                logger.warning("Gate router switch thread failed (non-fatal): %s", e)
+            finally:
+                self._router_switch_lock.release()
+
+        threading.Thread(target=_do, daemon=True,
+                         name="moe-l2-router-switch").start()
 
     # ── 实时信号入口 ──────────────────────────────────────────
 
@@ -115,6 +224,9 @@ class RoutingProfiler:
 
     def on_request(self, domain: str) -> None:
         """请求级信号：领域切换 → 主动预热目标域。"""
+        # [moe-l2 2026-08-16] domain 归一化为 str：predict_hybrid 可能返回
+        # np.str_（numpy 字符串），混入历史队列/池会污染日志与序列化。
+        domain = str(domain)
         # [moe-l2 2026-08-09] 先同步领域给飞轮（聚合按当前领域归组）
         if self.router_flywheel is not None:
             try:
@@ -124,8 +236,10 @@ class RoutingProfiler:
         # [moe-l2 route-by-domain C 2026-08-15] 动态换表：把该领域的专家表
         # POST /moe-set-domain → llama-server 清旧 prefill、按新表重新 prefill。
         # 放在 cache 判断之前：即使无 L2 cache 也能吃到领域专属 prefill 加速。
+        # [moe-l2 2026-08-19] 改为节流+互斥+后台执行：旧版同步换表在并发请求下
+        # 全部阻塞在 /moe-set-domain（timeout=10s）→ proxy 并发卡死。
         if self.router_server_url is not None:
-            self._switch_router_domain(domain)
+            self._schedule_router_switch(domain)
         if self.cache is None or self.expert_map is None:
             return
         try:
@@ -135,11 +249,16 @@ class RoutingProfiler:
             logger.warning("Gate promote failed: %s", e)
 
     def _switch_router_domain(self, domain: str) -> None:
-        """按预测领域动态换路由表（C 方案）。
+        """按预测领域动态换路由表 + 保留上领域热专家（C 方案 + retain v2）。
 
-        从 flywheel 表（domain_router_map_flywheel_{model}.json）读取该领域
-        每层 top-k 专家，POST 到 llama-server /moe-set-domain。失败非致命，
-        只记日志（服务不中断）。
+        [moe-l2 retain-hot-experts v2 2026-08-16] 多领域保留池：
+        - 领域历史队列（当前 + 上一个）→ 构造保留池
+        - 池 = {当前} ∪ {上一个} ∪ {flywheel dom_freq 热门补位}（去重，≤ pool_size）
+        - retain payload = 池中除主表外所有领域 top-X 并集（每层）
+        - POST /moe-set-domain 带 retain：server 端主表 ∪ 保留按层合并去重 →
+          soft_resize（不清 cache）→ 领域回切时旧领域热专家直接命中。
+
+        失败非致命，只记日志（服务不中断）。
         """
         try:
             if self.router_flywheel is None:
@@ -164,19 +283,79 @@ class RoutingProfiler:
             }
             if not experts:
                 return
-            body = json.dumps({"domain": domain, "experts": experts}).encode("utf-8")
+
+            # [moe-l2 retain-hot-experts v2 2026-08-16] 领域历史 + 池构造
+            self._domain_history.append(domain)
+            dom_freq = d.get("dom_freq", {})
+            pool = self._build_domain_pool(domain, domains, dom_freq)
+            retain = self._build_retain_payload(domain, domains, pool)
+
+            body = {"domain": domain, "experts": experts}
+            if retain:
+                body["retain"] = retain
+            body_b = json.dumps(body).encode("utf-8")
             base = self.router_server_url
             if not base:
                 return
             url = base.rstrip("/") + "/moe-set-domain"
-            req = urllib.request.Request(url, data=body,
+            req = urllib.request.Request(url, data=body_b,
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp.read()
-            logger.info("Gate: router switch domain=%s layers=%d experts=%d",
-                        domain, len(experts), sum(len(v) for v in experts.values()))
+            logger.info(
+                "Gate: router switch domain=%s layers=%d experts=%d retain=%s pool=%s",
+                domain, len(experts), sum(len(v) for v in experts.values()),
+                bool(retain), pool)
         except Exception as e:
             logger.warning("Gate router switch failed (non-fatal): %s", e)
+
+    # [moe-l2 retain-hot-experts v2 2026-08-16] ── 多领域保留池 ────────────
+
+    def _build_domain_pool(self, domain: str, domains: dict,
+                           dom_freq: dict) -> list[str]:
+        """构造领域池：{当前} ∪ {上一个} ∪ {dom_freq 热门补位}，去重至 pool_size。
+
+        池内领域都必须存在于 flywheel 表（否则 retain 取不到专家）。
+        热门 = dom_freq 降序取，跳过已在池的，直到池满或候选耗尽。
+        """
+        pool: list[str] = []
+        # 1. 当前领域（主表）
+        if domain in domains:
+            pool.append(domain)
+        # 2. 上一个领域（历史队列中最近的非当前领域）
+        for prev in reversed(self._domain_history):
+            if prev != domain and prev in domains and prev not in pool:
+                pool.append(prev)
+                break
+        # 3. dom_freq 热门补位（跳过已在池的，保持池满 pool_size）
+        ranked = [x for x, _ in sorted(dom_freq.items(), key=lambda kv: -kv[1])
+                  if x in domains]
+        for x in ranked:
+            if len(pool) >= self._pool_size:
+                break
+            if x not in pool:
+                pool.append(x)
+        return pool[:self._pool_size]
+
+    def _build_retain_payload(self, domain: str, domains: dict,
+                              pool: list[str]) -> dict | None:
+        """retain payload：池中除主表外所有领域 top-X 并集（每层）。
+
+        返回 {layer_str: [expert...]}；池只有主表时返回 None（不传 retain）。
+        """
+        retain_layers: dict[int, set] = defaultdict(set)
+        for rd in pool:
+            if rd == domain:
+                continue
+            domdata = domains.get(rd)
+            if not domdata:
+                continue
+            plist = domdata.get("per_layer_domain_preferred", {})
+            for L, v in plist.items():
+                retain_layers[int(L)].update(int(e) for e in list(v)[:self._retain_top_k])
+        if not retain_layers:
+            return None
+        return {str(L): sorted(es) for L, es in sorted(retain_layers.items())}
 
     # ── 画像查询 ─────────────────────────────────────────────
 

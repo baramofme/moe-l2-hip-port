@@ -214,9 +214,13 @@ class MoEL2ProxyHandler(BaseHTTPRequestHandler):
                     logger.warning("Gate request signal failed (non-fatal): %s", ge)
 
             # 模式 B 数据飞轮：记录真实流量样本，攒够阈值增量重训
+            # [moe-l2 2026-08-19] maybe_retrain 放后台线程：旧版同步全量重训
+            # （TF-IDF + LinearSVC，数百样本可达数秒）在并发请求下阻塞请求
+            # 线程 → proxy 并发卡死（与换表同步阻塞同族）。
             try:
                 append_sample(text, domain)
-                maybe_retrain()
+                threading.Thread(target=maybe_retrain, daemon=True,
+                                 name="moe-l2-flywheel-retrain").start()
             except Exception as fe:
                 logger.warning("Flywheel sampling failed (non-fatal): %s", fe)
         except Exception as e:

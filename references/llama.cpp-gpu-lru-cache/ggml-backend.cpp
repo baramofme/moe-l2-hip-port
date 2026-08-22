@@ -83,6 +83,27 @@ void ggml_backend_router_resize_cache(int new_n_slots) {
         resize_fn(new_n_slots);
     }
 }
+
+// [moe-l2 retain-hot-experts v1 2026-08-16] 软调整 cache 槽数：
+// 只改 n_slots 容量、**不清空已有槽**——换表保留热专家用。
+// 经 CUDA backend 的 get_proc_address 解析 ggml_cuda_expert_cache_soft_resize。
+void ggml_backend_router_soft_resize_cache(int new_n_slots) {
+    if (new_n_slots <= 0) return;
+    static void (*soft_resize_fn)(int) = nullptr;
+    static bool resolved = false;
+    if (!resolved) {
+        auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        if (cuda_dev) {
+            auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
+            soft_resize_fn = (void (*)(int))
+                ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_soft_resize");
+        }
+        resolved = true;
+    }
+    if (soft_resize_fn) {
+        soft_resize_fn(new_n_slots);
+    }
+}
 }
 
 // backend buffer type
@@ -1786,6 +1807,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             }
                             cache_set_resolved = true;
                         }
+                        // [moe-l2 retain-hot-experts v1 2026-08-16] resolve get
+                        // (key-presence probe) so prefill can skip experts that
+                        // are ALREADY in the cache. Without this, re-prefilling
+                        // retained (old-domain) experts after a soft table switch
+                        // would overwrite LRU victims and evict other hot
+                        // entries — the whole point of retain is to keep them.
+                        static const void * (*cache_get_fn)(const void *) = nullptr;
+                        static bool cache_get_resolved = false;
+                        if (!cache_get_resolved) {
+                            auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+                            if (cuda_dev) {
+                                auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
+                                cache_get_fn = (const void * (*)(const void *))
+                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_get");
+                            }
+                            cache_get_resolved = true;
+                        }
                         // [moe-l2 P0 fix v2 2026-08-13] resolve the CUDA
                         // backend's compute stream ONCE so cache D2D copies run
                         // on the SAME stream that fills input_cpy via
@@ -1915,8 +1953,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     if (!rset.empty()) {
                                         const uint64_t name_h = std::hash<std::string>{}(tname);
                                         int n_prefilled = 0;
+                                        int n_skipped = 0;
                                         for (int32_t e : rset) {
                                             if (e < 0 || e >= n_expert) {
+                                                continue;
+                                            }
+                                            const uint64_t key = name_h ^ (uint64_t) e * 0x9E3779B97F4A7C15ULL;
+                                            // [moe-l2 retain-hot-experts v1 2026-08-16]
+                                            // skip experts already in cache (soft
+                                            // table switch kept them).
+                                            if (cache_get_fn && cache_get_fn((const void *) key)) {
+                                                n_skipped++;
                                                 continue;
                                             }
                                             const size_t off = (size_t) e * expert_size;
@@ -1945,8 +1992,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                             n_prefilled++;
                                         }
                                         fprintf(stderr,
-                                            "[moe-l2] prefill: %s -> %d experts into GPU cache\n",
-                                            tname.c_str(), n_prefilled);
+                                            "[moe-l2] prefill: %s -> %d experts into GPU cache (%d already present, skipped)\n",
+                                            tname.c_str(), n_prefilled, n_skipped);
                                     }
                                 }
                             }

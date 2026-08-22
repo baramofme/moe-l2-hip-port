@@ -5894,6 +5894,17 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_cuda_expert_cache_resize") == 0) {
         return (void *)ggml_cuda_expert_cache_resize;
     }
+    // [moe-l2 retain-hot-experts v1 2026-08-16] expose soft resize (keep
+    // existing slots) so the scheduler can grow/shrink capacity WITHOUT
+    // flushing the cache — the retain-hot-experts table switch relies on it.
+    if (strcmp(name, "ggml_cuda_expert_cache_soft_resize") == 0) {
+        return (void *)ggml_cuda_expert_cache_soft_resize;
+    }
+    // [moe-l2 retain-hot-experts v1 2026-08-16] expose get (key presence
+    // probe) so the scheduler's prefill can skip experts already in cache.
+    if (strcmp(name, "ggml_cuda_expert_cache_get") == 0) {
+        return (void *)ggml_cuda_expert_cache_get;
+    }
     if (strcmp(name, "ggml_cuda_expert_pin_host") == 0) {
         return (void *)ggml_cuda_expert_pin_host;
     }

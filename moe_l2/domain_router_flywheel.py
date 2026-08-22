@@ -33,7 +33,8 @@ DATA_DIR = ROOT / "moe_l2" / "data"
 DEFAULT_MAP_PATH = DATA_DIR / "domain_router_map_flywheel.json"  # legacy fallback（无 model_id 时）
 
 # 每层每领域保留的高频专家数（与验证报告 top-75 对齐；Qwen 用 top-100 也兼容）
-DEFAULT_TOP_K = 75
+# [2026-08-16 实验] top_k 75→100：验证提高路由表覆盖能否提升命中率（08-13 大表 3971 专家命中 87.5% vs 3000 专家 71.8%）
+DEFAULT_TOP_K = 100
 # 触发重建路由表的 EXPERT 记录阈值（个人使用约 1-2 天）
 REBUILD_EVERY_N = 5000
 # 至少需要多少条才开始重建（防止刚启动就用 3 条记录覆盖真实表）
