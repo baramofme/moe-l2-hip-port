@@ -26,6 +26,24 @@ Format: Keep a Changelog 1.1 style — Added / Changed / Fixed.
 
 ---
 
+## [0.9.0] - 2026-08-16
+
+### Added
+- **C-scheme per-domain table switch** — per-domain router maps with `POST /moe-set-domain`: switching domains swaps the active expert table instead of reusing one global table.
+- **Retain-hot-experts v1 (retain pool)** — domain switch keeps previous-domain hot experts resident instead of clearing the cache (v2 landed in 0.10.0 with `soft_resize`).
+- **DS crash fix** — cache slot resize on table switch no longer crashes concurrent DeepSeek inference.
+- **Flywheel table persistence (A-fix)** — learned router map survives restarts.
+- `_DEFAULT_BINS_TAG` → `bins-v0.5.0` — multi-arch (sm_61/75/86/89/120a, CUDA 12.8), includes selective pin + C-scheme table switch + GPU cache prefill + on-demand pin + eviction v3.1 + layered pin + A3 cache 2048 slots + P0 fix.
+
+### Verified (2026-08-16, 2080 Ti / 4090 / 5090, clean outputs)
+- DS-V2-Lite: 83-88 / 127-137 / 145-153 t/s
+- Qwen3.6-A3B: 13-25 / 20-34 / 45-51 t/s
+
+### Changed
+- README (EN/ZH): speed tables updated to bins-v0.5.0 three-card data.
+
+---
+
 ## [0.8.1] - 2026-08-14
 
 ### Fixed
@@ -183,6 +201,9 @@ Format: Keep a Changelog 1.1 style — Added / Changed / Fixed.
 
 ---
 
+[0.10.0]: https://github.com/yalun753/moe-l2/releases/tag/bins-v0.6.0
+[0.9.0]: https://github.com/yalun753/moe-l2/releases/tag/bins-v0.5.0
+[0.8.1]: https://github.com/yalun753/moe-l2/releases/tag/bins-v0.4.1
 [0.7.1]: https://github.com/yalun753/moe-l2/releases/tag/bins-v0.3.1
 [0.7.0]: https://github.com/yalun753/moe-l2/releases/tag/bins-v0.3.0
 [0.6.1]: https://github.com/yalun753/moe-l2/releases/tag/bins-v0.2.1
