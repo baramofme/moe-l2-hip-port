@@ -1,0 +1,603 @@
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index e519bdf..21f3d29 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "ggml-backend.h"
+ #include "ggml-backend-impl.h"
++#include <string>
+ #include "ggml-alloc.h"
+ #include "ggml-impl.h"
+ 
+@@ -1687,19 +1688,112 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+                         prev_ids_tensor = ids_tensor;
+                     }
+ 
+-                    // group consecutive experts and copy them together
++                    // [moe-l2] resolve CUDA/HIP backend proc-address functions for
++                    // expert pin + LRU cache (lazily, once).
++                    static bool (*pin_fn)(const void *, size_t) = nullptr;
++                    static bool pin_resolved = false;
++                    static bool (*cache_copy_fn)(const void *, void *, size_t, size_t, void *) = nullptr;
++                    static bool cache_copy_resolved = false;
++                    static const void * (*cache_get_fn)(const void *) = nullptr;
++                    static bool cache_get_resolved = false;
++                    static const void * (*cache_set_fn)(const void *, size_t, const void *, void *) = nullptr;
++                    static bool cache_set_resolved = false;
++                    static void * (*cache_stream_fn)(ggml_backend_t) = nullptr;
++                    static bool cache_stream_resolved = false;
++                    if (!pin_resolved) {
++                        auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
++                        if (cuda_dev) {
++                            auto * cuda_reg = ggml_backend_dev_backend_reg(cuda_dev);
++                            if (cuda_reg) {
++                                pin_fn = (bool (*)(const void *, size_t))
++                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_pin_host");
++                                cache_copy_fn = (bool (*)(const void *, void *, size_t, size_t, void *))
++                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_copy_if_hit");
++                                cache_get_fn = (const void * (*)(const void *))
++                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_get");
++                                cache_set_fn = (const void * (*)(const void *, size_t, const void *, void *))
++                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_set");
++                                cache_stream_fn = (void * (*)(ggml_backend_t))
++                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_get_backend_stream");
++                            }
++                        }
++                        pin_resolved = true;
++                        cache_copy_resolved = true;
++                        cache_get_resolved = true;
++                        cache_set_resolved = true;
++                        cache_stream_resolved = true;
++                        fprintf(stderr, "[HIP-PROC] pin=%p copy=%p get=%p set=%p stream=%p\n",
++                            (void *)pin_fn, (void *)cache_copy_fn, (void *)cache_get_fn, (void *)cache_set_fn, (void *)cache_stream_fn);
++                    }
++
++                    // group consecutive experts and copy them together — but
++                    // handle each expert individually when the LRU cache is
++                    // active so H2D fill and cache D2D run in order.
++                    const uint64_t name_h = std::hash<std::string>{}(input->name ? input->name : "");
++                    const size_t padding = std::min<size_t>(expert_size, 512);
++                    {
++                        static int kdbg = 0;
++                        if (kdbg < 15) { kdbg++;
++                            fprintf(stderr, "[HIP-KEY] input name=%s input_cpy name=%s\n",
++                                input->name ? input->name : "(null)",
++                                input_cpy->name ? input_cpy->name : "(null)");
++                        }
++                    }
+                     auto copy_experts = [&](int32_t first_id, int32_t last_id) {
+                         const size_t expert_offset = first_id * expert_size;
+                         const size_t expert_size_copy =  (last_id - first_id + 1) * expert_size;
+-                        const size_t padding = std::min<size_t>(expert_size, 512);
+                         const size_t padding_end = last_id < n_expert - 1 ? padding : 0;
+ 
+-                        ggml_backend_tensor_set_async(split_backend,
+-                            input_cpy,
+-                            (const uint8_t *)input->data + expert_offset, expert_offset,
+-                            // copy a bit extra at the to ensure there are no NaNs in the padding of the last expert
+-                            // this is necessary for MMQ in the CUDA backend
+-                            expert_size_copy + padding_end);
++                        const bool cache_active = cache_get_fn && cache_copy_fn && cache_set_fn;
++
++                        if (cache_active) {
++                            // [moe-l2] per-expert path: try cache first (D2D),
++                            // miss -> H2D fill + write-back, all on the SAME
++                            // stream so ordering is preserved (no garbage at
++                            // high hit rate).
++                            for (int32_t eid = first_id; eid <= last_id; ++eid) {
++                                const size_t e_off = (eid - first_id) * expert_size;
++                                const size_t off = expert_offset + e_off;
++                                // copy es+padding for every expert except the
++                                // tensor's last (MMQ needs valid padding).
++                                const size_t copy_len = (eid == n_expert - 1) ? expert_size : expert_size + padding;
++
++                                // pin host pages so the GPU can read them directly
++                                if (pin_fn && (!getenv("MOEL2_NOPIN") || !getenv("MOEL2_NOPIN")[0])) {
++                                    pin_fn((const uint8_t *)input->data + off, copy_len);
++                                }
++
++                                const void * cache_key = (const void *)(name_h ^ (uint64_t)eid * 0x9E3779B97F4A7C15ULL);
++                                void * dst_gpu = (uint8_t *)input_cpy->data + off;
++
++                                // re-fetch stream per expert: curr_stream_no
++                                // rotates between graph nodes
++                                void * cs = cache_stream_fn ? cache_stream_fn(split_backend) : nullptr;
++
++                                bool cache_hit = false;
++                                if (cache_copy_fn) {
++                                    cache_hit = cache_copy_fn(cache_key, dst_gpu, 0, copy_len, cs);
++                                }
++
++                                if (!cache_hit) {
++                                    // miss: H2D fill on the same stream, then
++                                    // write back to the cache.
++                                    ggml_backend_tensor_set_async(split_backend,
++                                        input_cpy,
++                                        (const uint8_t *)input->data + off, off,
++                                        copy_len);
++                                    if (cache_set_fn) {
++                                        cache_set_fn(cache_key, copy_len, dst_gpu, cs);
++                                    }
++                                }
++                            }
++                        } else {
++                            // original group copy path (no cache)
++                            ggml_backend_tensor_set_async(split_backend,
++                                input_cpy,
++                                (const uint8_t *)input->data + expert_offset, expert_offset,
++                                expert_size_copy + padding_end);
++                        }
+                     };
+ 
+                     int id = 0;
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 2456f7d..2ae6e2a 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1,9 +1,12 @@
++#include <unistd.h>
++#include <sys/mman.h>
+ #include "ggml-cuda.h"
+ #include "ggml-impl.h"
+ #include "ggml-backend-impl.h"
+ 
+ #include "ggml-cuda/allreduce.cuh"
+ #include "ggml-cuda/common.cuh"
++#include "ggml-cuda/expert-cache.cuh"
+ #include "ggml-cuda/acc.cuh"
+ #include "ggml-cuda/add-id.cuh"
+ #include "ggml-cuda/arange.cuh"
+@@ -1900,6 +1903,31 @@ static bool ggml_cuda_mul_mat_id_needs_sync(const ggml_tensor * dst, const int c
+     return true;
+ }
+ 
++
++// [moe-l2 A3 fix] Returns true when the expert tensor's data physically lives in
++// CPU host memory (mmap'd) rather than on the GPU device.
++static bool ggml_cuda_experts_on_host(const ggml_tensor * src0) {
++    static std::mutex mtx;
++    static std::unordered_map<const void *, bool> cache;
++    const void * ptr = src0->data;
++    {
++        std::lock_guard<std::mutex> lock(mtx);
++        auto it = cache.find(ptr);
++        if (it != cache.end()) {
++            return it->second;
++        }
++    }
++    bool on_host = true;
++    cudaPointerAttributes pa;
++    cudaError_t err = cudaPointerGetAttributes(&pa, ptr);
++    if (err == cudaSuccess && pa.type == cudaMemoryTypeDevice) {
++        on_host = false;
++    }
++    std::lock_guard<std::mutex> lock(mtx);
++    cache[ptr] = on_host;
++    return on_host;
++}
++
+ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     const ggml_tensor * src0 = dst->src[0];
+     const ggml_tensor * src1 = dst->src[1];
+@@ -1912,8 +1940,25 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+ 
+     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+ 
++    // [moe-l2 sched-cache] Init the expert cache unconditionally at the top of
++    // mul_mat_id, BEFORE the fast-path early returns.
++    {
++        const int64_t ne02_init = dst->src[0] ? dst->src[0]->ne[2] : 0;
++        if (ne02_init > 0) {
++            ggml_cuda_expert_cache_maybe_init(ne02_init);
++        }
++    }
++
+     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
+     if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
++        {
++            static const bool a3_on = []() {
++                const char * env = getenv("GGML_CUDA_EXPERT_CACHE");
++                return env && env[0] != 0;
++            }();
++            const bool skip = a3_on && ggml_cuda_experts_on_host(src0);
++            if (skip) goto skip_early_returns;
++        }
+         static_assert(MMVQ_MAX_BATCH_SIZE == MMVF_MAX_BATCH_SIZE);
+         if (ne2 <= MMVQ_MAX_BATCH_SIZE) {
+             if (ggml_is_quantized(src0->type)) {
+@@ -1941,6 +1986,8 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+         }
+     }
+ 
++skip_early_returns:
++
+     // note: this path should not be reached when recording CUDA graphs, because it requires stream synchronization
+     GGML_ASSERT(ggml_cuda_mul_mat_id_needs_sync(dst, cc));
+     cudaStream_t stream = ctx.stream();
+@@ -2004,51 +2051,165 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+ 
+     char * src1_data_cur = (char *) src1_sorted.ptr;
+     char *  dst_data_cur = (char *)  dst_sorted.ptr;
+-    for (int64_t i02 = 0; i02 < ne02; ++i02) {
+-        if (tokens_per_expert[i02] == 0) {
+-            continue;
+-        }
+ 
+-        ggml_tensor src0_slice = *src0;
+-        src0_slice.ne[2]    = 1;
+-        src0_slice.nb[3]    = src0_slice.nb[2];
+-        src0_slice.op       = GGML_OP_VIEW;
+-        src0_slice.view_src = dst->src[0]; // non-const pointer to src0
+-        src0_slice.data     = (char *) src0->data + i02*nb02;
+-
+-        ggml_tensor src1_slice;
+-        memset(&src1_slice, 0, sizeof(src1_slice));
+-        src1_slice.buffer = src1->buffer;
+-        src1_slice.type   = type_src1_sorted;
+-        src1_slice.ne[0]  = ne10;
+-        src1_slice.ne[1]  = tokens_per_expert[i02];
+-        src1_slice.ne[2]  = 1;
+-        src1_slice.ne[3]  = 1;
+-        src1_slice.nb[0]  = ts_src1_sorted;
+-        src1_slice.nb[1]  = src1_slice.ne[0] * src1_slice.nb[0];
+-        src1_slice.nb[2]  = src1_slice.ne[1] * src1_slice.nb[1];
+-        src1_slice.nb[3]  = src1_slice.ne[2] * src1_slice.nb[2];
+-        src1_slice.data   = src1_data_cur;
+-
+-        ggml_tensor dst_slice;
+-        memset(&dst_slice, 0, sizeof(dst_slice));
+-        dst_slice.buffer = dst->buffer;
+-        dst_slice.type   = type_dst_sorted;
+-        dst_slice.ne[0]  = ne0;
+-        dst_slice.ne[1]  = tokens_per_expert[i02];
+-        dst_slice.ne[2]  = 1;
+-        dst_slice.ne[3]  = 1;
+-        dst_slice.nb[0]  = ts_dst_sorted;
+-        dst_slice.nb[1]  = dst_slice.ne[0] * dst_slice.nb[0];
+-        dst_slice.nb[2]  = dst_slice.ne[1] * dst_slice.nb[1];
+-        dst_slice.nb[3]  = dst_slice.ne[2] * dst_slice.nb[2];
+-        dst_slice.data   = dst_data_cur;
+-
+-        ggml_cuda_mul_mat(ctx, &src0_slice, &src1_slice, &dst_slice);
+-        CUDA_CHECK(cudaGetLastError());
++    // [moe-l2 A3] LRU expert cache: per-expert get/set pipeline when experts
++    // live on host (mmap'd CPU RAM) and GGML_CUDA_EXPERT_CACHE is enabled.
++    {
++        static const bool a3_on = []() {
++            const char * env = getenv("GGML_CUDA_EXPERT_CACHE");
++            return env && env[0] != 0;
++        }();
++        const bool experts_on_host = a3_on && ggml_cuda_experts_on_host(src0);
++        ggml_cuda_expert_cache_maybe_init(ne02);
++
++        if (experts_on_host) {
++            std::vector<int64_t> used_experts;
++            for (int64_t i02 = 0; i02 < ne02; ++i02) {
++                if (tokens_per_expert[i02] > 0) {
++                    used_experts.push_back(i02);
++                }
++            }
+ 
+-        src1_data_cur += src1_slice.nb[2];
+-        dst_data_cur  +=  dst_slice.nb[2];
++            if (!used_experts.empty()) {
++                ggml_tensor tmp_slice = *src0;
++                tmp_slice.ne[2] = 1;
++                const size_t expert_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, &tmp_slice);
++                ggml_cuda_pool_alloc<char> temp_gpu(ctx.pool());
++
++                for (int ei = 0; ei < (int)used_experts.size(); ei++) {
++                    const int64_t i02 = used_experts[ei];
++                    const void * cpu_src = (const char *)src0->data + i02 * nb02;
++
++                    // cache key uses the ORIGINAL tensor name (strip the
++                    // "ROCm0#...#0" input-copy wrapper) so it matches the
++                    // scheduler's copy_experts key (input->name, e.g.
++                    // "blk.5.ffn_gate_exps.weight").
++                    std::string key_name = src0->name ? src0->name : "";
++                    const size_t hash_pos = key_name.find('#');
++                    if (hash_pos != std::string::npos) {
++                        key_name = key_name.substr(hash_pos + 1);
++                        const size_t hash_pos2 = key_name.rfind('#');
++                        if (hash_pos2 != std::string::npos) {
++                            key_name = key_name.substr(0, hash_pos2);
++                        }
++                    }
++                    const uint64_t name_h = std::hash<std::string>{}(key_name);
++                    {
++                        static int mdbg = 0;
++                        if (mdbg < 15) { mdbg++;
++                            fprintf(stderr, "[HIP-MKEY] src0=%s key_name=%s i02=%lld\n",
++                                src0->name ? src0->name : "(null)", key_name.c_str(), (long long)i02);
++                        }
++                    }
++                    const void * cache_key = (const void *)(name_h ^ (uint64_t)i02 * 0x9E3779B97F4A7C15ULL);
++
++                    const void * gpu_ptr = ggml_cuda_expert_cache_get(cache_key);
++
++                    if (!gpu_ptr) {
++                        temp_gpu.alloc(expert_alloc);
++                        cudaPointerAttributes pa;
++                        const cudaError_t pe = cudaPointerGetAttributes(&pa, cpu_src);
++                        const bool cpu_src_is_dev = (pe == cudaSuccess && pa.type == cudaMemoryTypeDevice);
++                        const cudaMemcpyKind kind = cpu_src_is_dev ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
++                        CUDA_CHECK(cudaMemcpyAsync(temp_gpu.ptr, cpu_src, nb02, kind, ctx.stream()));
++                        CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
++
++                        const void * cached = ggml_cuda_expert_cache_set(
++                            cache_key, expert_alloc, temp_gpu.ptr, ctx.stream());
++                        gpu_ptr = cached ? cached : temp_gpu.ptr;
++                    }
++
++                    // -- Compute on GPU --
++                    ggml_tensor src0_slice = *src0;
++                    src0_slice.ne[2]    = 1;
++                    src0_slice.nb[3]    = src0_slice.nb[2];
++                    src0_slice.op       = GGML_OP_NONE;
++                    src0_slice.view_src = nullptr;
++                    src0_slice.data     = const_cast<char *>(static_cast<const char *>(gpu_ptr));
++                    ggml_tensor src1_slice;
++                    memset(&src1_slice, 0, sizeof(src1_slice));
++                    src1_slice.buffer = src1->buffer;
++                    src1_slice.type   = type_src1_sorted;
++                    src1_slice.ne[0]  = ne10;
++                    src1_slice.ne[1]  = tokens_per_expert[i02];
++                    src1_slice.ne[2]  = 1;
++                    src1_slice.ne[3]  = 1;
++                    src1_slice.nb[0]  = ts_src1_sorted;
++                    src1_slice.nb[1]  = src1_slice.ne[0] * src1_slice.nb[0];
++                    src1_slice.nb[2]  = src1_slice.ne[1] * src1_slice.nb[1];
++                    src1_slice.nb[3]  = src1_slice.ne[2] * src1_slice.nb[2];
++                    src1_slice.data   = src1_data_cur;
++
++                    ggml_tensor dst_slice;
++                    memset(&dst_slice, 0, sizeof(dst_slice));
++                    dst_slice.buffer = dst->buffer;
++                    dst_slice.type   = type_dst_sorted;
++                    dst_slice.ne[0]  = ne0;
++                    dst_slice.ne[1]  = tokens_per_expert[i02];
++                    dst_slice.ne[2]  = 1;
++                    dst_slice.ne[3]  = 1;
++                    dst_slice.nb[0]  = ts_dst_sorted;
++                    dst_slice.nb[1]  = dst_slice.ne[0] * dst_slice.nb[0];
++                    dst_slice.nb[2]  = dst_slice.ne[1] * dst_slice.nb[1];
++                    dst_slice.nb[3]  = dst_slice.ne[2] * dst_slice.nb[2];
++                    dst_slice.data   = dst_data_cur;
++
++                    ggml_cuda_mul_mat(ctx, &src0_slice, &src1_slice, &dst_slice);
++                    CUDA_CHECK(cudaGetLastError());
++
++                    src1_data_cur += src1_slice.nb[2];
++                    dst_data_cur  +=  dst_slice.nb[2];
++                }
++            }
++        } else {
++            // GPU fast path: experts already in VRAM, compute each directly.
++            for (int64_t i02 = 0; i02 < ne02; ++i02) {
++                if (tokens_per_expert[i02] == 0) {
++                    continue;
++                }
++
++                ggml_tensor src0_slice = *src0;
++                src0_slice.ne[2]    = 1;
++                src0_slice.nb[3]    = src0_slice.nb[2];
++                src0_slice.op       = GGML_OP_VIEW;
++                src0_slice.view_src = dst->src[0]; // non-const pointer to src0
++                src0_slice.data     = (char *) src0->data + i02*nb02;
++
++                ggml_tensor src1_slice;
++                memset(&src1_slice, 0, sizeof(src1_slice));
++                src1_slice.buffer = src1->buffer;
++                src1_slice.type   = type_src1_sorted;
++                src1_slice.ne[0]  = ne10;
++                src1_slice.ne[1]  = tokens_per_expert[i02];
++                src1_slice.ne[2]  = 1;
++                src1_slice.ne[3]  = 1;
++                src1_slice.nb[0]  = ts_src1_sorted;
++                src1_slice.nb[1]  = src1_slice.ne[0] * src1_slice.nb[0];
++                src1_slice.nb[2]  = src1_slice.ne[1] * src1_slice.nb[1];
++                src1_slice.nb[3]  = src1_slice.ne[2] * src1_slice.nb[2];
++                src1_slice.data   = src1_data_cur;
++
++                ggml_tensor dst_slice;
++                memset(&dst_slice, 0, sizeof(dst_slice));
++                dst_slice.buffer = dst->buffer;
++                dst_slice.type   = type_dst_sorted;
++                dst_slice.ne[0]  = ne0;
++                dst_slice.ne[1]  = tokens_per_expert[i02];
++                dst_slice.ne[2]  = 1;
++                dst_slice.ne[3]  = 1;
++                dst_slice.nb[0]  = ts_dst_sorted;
++                dst_slice.nb[1]  = dst_slice.ne[0] * dst_slice.nb[0];
++                dst_slice.nb[2]  = dst_slice.ne[1] * dst_slice.nb[1];
++                dst_slice.nb[3]  = dst_slice.ne[2] * dst_slice.nb[2];
++                dst_slice.data   = dst_data_cur;
++
++                ggml_cuda_mul_mat(ctx, &src0_slice, &src1_slice, &dst_slice);
++                CUDA_CHECK(cudaGetLastError());
++
++                src1_data_cur += src1_slice.nb[2];
++                dst_data_cur  +=  dst_slice.nb[2];
++            }
++        }
+     }
+ 
+     get_rows_cuda(dst_sorted.ptr, type_dst_sorted, ids_from_sorted, dst->data, dst->type,
+@@ -2057,6 +2218,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+         nb1, nb2, nb3, stream);
+ }
+ 
++
+ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
+     switch (dst->op) {
+         case GGML_OP_ARGMAX:
+@@ -5472,8 +5634,151 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t
+     GGML_UNUSED(reg);
+ }
+ 
++
++// [moe-l2 on-demand pin 2026-08-07 v2] shared registry between pin/unpin.
++static std::mutex g_pin_mtx;
++static std::vector<std::pair<uintptr_t, uintptr_t>> g_pinned_ranges; // [start, end) actually registered
++static size_t g_total_pinned_bytes = 0;
++
++bool ggml_cuda_expert_pin_host(const void * ptr, size_t nbytes) {
++    if (ptr == nullptr || nbytes == 0) {
++        return true;
++    }
++    const size_t ps = getpagesize();
++    uintptr_t addr  = (uintptr_t)ptr;
++    uintptr_t start = addr & ~(uintptr_t)(ps - 1);
++    uintptr_t end   = (addr + nbytes + ps - 1) & ~(uintptr_t)(ps - 1);
++    if (end <= start) {
++        return true;
++    }
++    std::lock_guard<std::mutex> lk(g_pin_mtx);
++
++    std::vector<std::pair<uintptr_t, uintptr_t>> overlapped;
++    uintptr_t mstart = start, mend = end;
++    for (auto & r : g_pinned_ranges) {
++        if (r.second <= start) continue;
++        if (r.first >= end) continue;
++        overlapped.push_back(r);
++        mstart = std::min(mstart, r.first);
++        mend   = std::max(mend,   r.second);
++    }
++
++    for (auto & r : overlapped) {
++        if (r.first <= start && end <= r.second) {
++            return true;
++        }
++    }
++
++    for (auto & r : overlapped) {
++        cudaError_t ue = cudaHostUnregister((void *) r.first);
++        if (ue != cudaSuccess) {
++            (void)cudaGetLastError();
++        }
++    }
++
++    if (mprotect((void *) mstart, mend - mstart, PROT_READ | PROT_WRITE) != 0) {
++    }
++
++    unsigned reg_flags = (getenv("MOEL2_NOMAPPED") && getenv("MOEL2_NOMAPPED")[0]) ? 0u : (unsigned)cudaHostRegisterMapped;
++    cudaError_t ce = (getenv("MOEL2_NOREG") && getenv("MOEL2_NOREG")[0]) ? cudaSuccess : cudaHostRegister((void *) mstart, mend - mstart, reg_flags);
++    if (ce == cudaSuccess) {
++        g_total_pinned_bytes += (size_t)(mend - mstart);
++    } else {
++        (void)cudaGetLastError();
++    }
++
++    std::vector<std::pair<uintptr_t, uintptr_t>> nregs;
++    for (auto & r : g_pinned_ranges) {
++        bool merged_away = false;
++        for (auto & o : overlapped) {
++            if (o.first == r.first && o.second == r.second) { merged_away = true; break; }
++        }
++        if (!merged_away) {
++            nregs.push_back(r);
++        }
++    }
++    nregs.emplace_back(mstart, mend);
++    g_pinned_ranges.swap(nregs);
++    return true;
++}
++
++bool ggml_cuda_expert_unpin_host(const void * ptr, size_t nbytes) {
++    if (ptr == nullptr || nbytes == 0) {
++        return true;
++    }
++    const size_t ps = getpagesize();
++    uintptr_t addr  = (uintptr_t)ptr;
++    uintptr_t start = addr & ~(uintptr_t)(ps - 1);
++    uintptr_t end   = (addr + nbytes + ps - 1) & ~(uintptr_t)(ps - 1);
++    if (end <= start) {
++        return true;
++    }
++    std::lock_guard<std::mutex> lk(g_pin_mtx);
++
++    std::vector<std::pair<uintptr_t, uintptr_t>> keep;
++    bool unreg_done = false;
++    for (auto & r : g_pinned_ranges) {
++        if (r.second <= start || r.first >= end) {
++            keep.push_back(r);
++            continue;
++        }
++        cudaError_t ue = cudaHostUnregister((void *) r.first);
++        if (ue != cudaSuccess) {
++            (void)cudaGetLastError();
++        }
++        unreg_done = true;
++    }
++    g_pinned_ranges.swap(keep);
++    (void)unreg_done;
++    return true;
++}
++
++// [moe-l2 P0 fix] Return the CUDA/HIP backend's compute stream so cache D2D
++// copies run on the SAME stream that fills input_cpy (ordering without blocking).
++static void * ggml_cuda_get_backend_stream(ggml_backend_t backend) {
++    if (!backend) {
++        return nullptr;
++    }
++    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
++    return (void *)cuda_ctx->stream();
++}
++
+ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+     GGML_UNUSED(reg);
++
++    if (strcmp(name, "ggml_cuda_get_backend_stream") == 0) {
++        return (void *)ggml_cuda_get_backend_stream;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_init") == 0) {
++        return (void *)ggml_cuda_expert_cache_init;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_free") == 0) {
++        return (void *)ggml_cuda_expert_cache_free;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_set") == 0) {
++        return (void *)ggml_cuda_expert_cache_set;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_get") == 0) {
++        return (void *)ggml_cuda_expert_cache_get;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_copy_if_hit") == 0) {
++        return (void *)ggml_cuda_expert_cache_copy_if_hit;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_maybe_init") == 0) {
++        return (void *)ggml_cuda_expert_cache_maybe_init;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_resize") == 0) {
++        return (void *)ggml_cuda_expert_cache_resize;
++    }
++    if (strcmp(name, "ggml_cuda_expert_cache_soft_resize") == 0) {
++        return (void *)ggml_cuda_expert_cache_soft_resize;
++    }
++    if (strcmp(name, "ggml_cuda_expert_pin_host") == 0) {
++        return (void *)ggml_cuda_expert_pin_host;
++    }
++    if (strcmp(name, "ggml_cuda_expert_unpin_host") == 0) {
++        return (void *)ggml_cuda_expert_unpin_host;
++    }
+     if (strcmp(name, "ggml_backend_comm_init") == 0) {
+         return (void *)ggml_backend_cuda_comm_init;
+     }
+diff --git a/ggml/src/ggml-cuda/vendors/hip.h b/ggml/src/ggml-cuda/vendors/hip.h
+index 9aa558f..e5ae68f 100644
+--- a/ggml/src/ggml-cuda/vendors/hip.h
++++ b/ggml/src/ggml-cuda/vendors/hip.h
+@@ -77,6 +77,12 @@
+ #define cudaHostRegisterPortable hipHostRegisterPortable
+ #define cudaHostRegisterReadOnly hipHostRegisterReadOnly
+ #define cudaHostUnregister hipHostUnregister
++#define cudaHostRegisterMapped 0
++#define cudaPointerAttributes hipPointerAttribute_t
++#define cudaPointerGetAttributes hipPointerGetAttributes
++#define cudaMemoryTypeDevice hipMemoryTypeDevice
++#define cudaStreamCreate hipStreamCreate
++#define cudaErrorUnknown hipErrorUnknown
+ #define cudaLaunchCooperativeKernel hipLaunchCooperativeKernel
+ #define cudaLaunchHostFunc hipLaunchHostFunc
+ #define cudaMalloc hipMalloc
