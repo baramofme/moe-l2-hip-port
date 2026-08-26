@@ -22,12 +22,25 @@
 #include <string.h>
 #include <algorithm>
 #include <vector>
+#include <unordered_set>
 
 #ifdef __APPLE__
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #endif
 
+
+
+// [moe-l2 HIP port] router map for selective pin: layer -> set of hot experts.
+// When MOE_L2_ROUTER_FILE is set, ONLY listed experts get pinned/cached;
+// unlisted experts stay mmap'd (on-demand fault path). This is the memory
+// saver (V4 whole-pin 84GB -> selective 26.8GB on the CUDA original).
+static std::vector<std::unordered_set<int32_t>> g_router_map;
+static bool g_router_loaded = false;
+static bool g_router_mode = []() {
+    const char * env = getenv("MOE_L2_ROUTER_FILE");
+    return env && env[0] != '\0';
+}();
 
 // backend buffer type
 
@@ -1688,6 +1701,51 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         prev_ids_tensor = ids_tensor;
                     }
 
+
+                    // [moe-l2 selective pin] router map: layer -> set of pinned
+                    // experts, loaded once from MOE_L2_ROUTER_FILE (format:
+                    // "layer expert1 expert2 ..." per line). Only listed experts
+                    // get pinned/cached; unlisted stay mmap'd (on-demand).
+                    if (g_router_mode && !g_router_loaded) {
+                        g_router_loaded = true;
+                        const char * path = getenv("MOE_L2_ROUTER_FILE");
+                        FILE * rf = path ? fopen(path, "r") : nullptr;
+                        if (!rf) {
+                            fprintf(stderr, "[moe-l2] selective pin: cannot open %s, falling back to whole-pin\n", path ? path : "(null)");
+                        } else {
+                            char line[8192];
+                            while (fgets(line, sizeof(line), rf)) {
+                                int layer = -1;
+                                char * p = line;
+                                while (*p == ' ' || *p == '\t') p++;
+                                if (*p == '#' || *p == '\n' || *p == '\0') continue;
+                                layer = atoi(p);
+                                if (layer < 0) continue;
+                                while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+                                if ((size_t) layer >= g_router_map.size()) g_router_map.resize(layer + 1);
+                                auto & s = g_router_map[layer];
+                                while (*p) {
+                                    while (*p == ' ' || *p == '\t') p++;
+                                    if (*p == '\n' || *p == '\0') break;
+                                    int e = atoi(p);
+                                    if (e >= 0) s.insert(e);
+                                    while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+                                }
+                            }
+                            fclose(rf);
+                            fprintf(stderr, "[moe-l2] selective pin: loaded %zu layers from %s\n", g_router_map.size(), path);
+                        }
+                    }
+
+                    // [moe-l2 selective pin] layer number of this expert tensor ("blk.<il>.ffn_*_exps.weight" -> il)
+                    auto router_layer_of = [](const ggml_tensor * t) -> int {
+                        const char * nm = ggml_get_name(t);
+                        if (!nm) return -1;
+                        const char * p = strstr(nm, "blk.");
+                        if (!p) return -1;
+                        return atoi(p + 4);
+                    };
+
                     // [moe-l2] resolve CUDA/HIP backend proc-address functions for
                     // expert pin + LRU cache (lazily, once).
                     static bool (*pin_fn)(const void *, size_t) = nullptr;
@@ -1758,7 +1816,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 // tensor's last (MMQ needs valid padding).
                                 const size_t copy_len = (eid == n_expert - 1) ? expert_size : expert_size + padding;
 
-                                // pin host pages so the GPU can read them directly
+                                // [moe-l2 HIP] pin ALL accessed experts (on-demand pin).
+                                // NOTE: selective pin (only router-listed experts)
+                                // crashes on HIP — hipMemcpyAsync H2D from an
+                                // unregistered mmap page adjacent to a registered
+                                // one fails with "invalid argument". Use MOEL2_NOPIN=1
+                                // to disable pinning entirely (slower, lower pinned RSS).
                                 if (pin_fn && (!getenv("MOEL2_NOPIN") || !getenv("MOEL2_NOPIN")[0])) {
                                     pin_fn((const uint8_t *)input->data + off, copy_len);
                                 }
@@ -1770,6 +1833,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 // rotates between graph nodes
                                 void * cs = cache_stream_fn ? cache_stream_fn(split_backend) : nullptr;
 
+                                // cache stays active for ALL experts (fast path);
+                                // only PINNING is selective (router-listed hot
+                                // experts get hipHostRegister'd, unlisted stay
+                                // mmap'd and copy via the normal H2D path).
                                 bool cache_hit = false;
                                 if (cache_copy_fn) {
                                     cache_hit = cache_copy_fn(cache_key, dst_gpu, 0, copy_len, cs);

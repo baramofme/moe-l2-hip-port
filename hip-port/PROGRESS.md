@@ -147,6 +147,30 @@ curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[
 
 **참고 — mul_mat_id A3 경로**: `[HIP-MULMATID]` 로그가 없음 → HIP에서 MUL_MAT_ID는 MMVQ/MMF 빠른 경로로 처리되고, moe-l2 캐시는 copy_experts(스케줄러) 경로에서 hit/consume 됨. 즉 **copy_experts 캐시 후킹이 실제 효과 경로**이며, mul_mat_id 내부 A3 변환은 dead path (향후 제거 가능).
 
+### Selective pin (router-map) 시도 결과 — HIP 제약 발견 (2026-08-27)
+
+**목표**: 원본처럼 hot 전문가만 핀해서 RSS 절감 (V4: whole-pin 84GB → selective 26.8GB)
+
+**시도한 조합 결과**:
+
+| 조합 | 결과 |
+|---|---|
+| 핀 ON + router(selective, 일부만 핀) | ❌ **크래시** — `hipMemcpyAsync invalid argument` (미핀 mmap 페이지 H2D 실패) |
+| 핀 OFF + router | ✅ 정상 — 단, 속도 12 t/s (캐시 미활용) |
+| 핀 ON + router + 캐시 16000 슬롯 (전부 핀) | ✅ **정상 — 35.4 t/s, hit 86.6%, 답 정확** |
+| 핀 ON + 전체(router 없음, 이전 검증) | ✅ 정상 — hit 95% |
+
+**HIP 제약 (문서화 필수)**:
+- `hipMemcpyAsync`는 **미핀 mmap 페이지를 H2D로 복사할 때** `invalid argument` 반환 가능
+  (CUDA는 페이지 폴트로 처리하지만 HIP는 실패)
+- **selective pin(일부만 hipHostRegister)** 시, 핀된 페이지와 인접한 미핀 페이지의 DMA가 깨짐 → 크래시
+- 안정적 모드는 **전부 핀**(on-demand pin, `MOEL2_NOPIN` 미설정) 또는 **전부 미핀**(`MOEL2_NOPIN=1`)
+
+**RSS가 높은 이유 (19.7GB)**:
+- `--n-cpu-moe 48`로 전문가 전체를 CPU에 두고, 추론이 **대부분의 전문가를 접근** → on-demand pin으로 전체가 핀/상주
+- 원본의 RSS 8-11GB는 **domain 라우팅으로 실제 사용 전문가만 접근**한 결과
+- RSS 절감은 **접근 전문가 수 제한**(domain 라우팅)이 필요 — selective pin은 HIP에서 불가
+
 ---
 
 ## 7. 알려진 함정 / 참고
@@ -168,10 +192,11 @@ curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[
 
 1. [ ] **DeepSeek-V4-Flash (85GB) 실제 실행** — 7900XTX에서 VRAM/RSS 측정 (최종 목표 모델)
    - ⚠️ 주의: upstream llama.cpp deepseek4 CUDA 전문가 버그(#25582)가 HIP에도 해당하는지 확인 필요
+   - RSS 전략: on-demand pin 사용 (selective pin은 HIP에서 불가 — 위 제약 참조)
 2. [ ] **Python 쪽 포팅** — `install.sh`/`doctor`의 nvidia-smi→rocm-smi, `download-bins`에 HIP asset 추가, `LD_LIBRARY_PATH` ROCm 경로
 3. [ ] **`--n-cpu-moe`로 검증된 설정을 `moe-l2 start --gpu` 통합** — proxy가 HIP llama-server를 spawn하도록
 4. [ ] mul_mat_id A3 경로 정리 (dead path 제거 또는 유지)
-5. [ ] eviction (`MOE_L2_LRU_MAX_EXPERTS`) + RSS 캡 실측 (선택 — V4에서 중요)
+5. [ ] **RSS 절감 추가 탐구** — domain 라우팅(실사용 전문가 제한) 또는 mmap page-cache 전략 (HIP selective pin 불가하므로 대안 필요)
 6. [ ] GitHub Release에 HIP 바이너리 (`llama-hip_bins.tar.gz`) 배포 파이프라인
 
 ---
