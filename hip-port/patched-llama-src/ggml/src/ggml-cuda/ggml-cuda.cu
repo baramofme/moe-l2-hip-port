@@ -5683,8 +5683,22 @@ bool ggml_cuda_expert_pin_host(const void * ptr, size_t nbytes) {
     cudaError_t ce = (getenv("MOEL2_NOREG") && getenv("MOEL2_NOREG")[0]) ? cudaSuccess : cudaHostRegister((void *) mstart, mend - mstart, reg_flags);
     if (ce == cudaSuccess) {
         g_total_pinned_bytes += (size_t)(mend - mstart);
+        {
+            static int pin_cnt = 0; static uint64_t pin_bytes = 0;
+            pin_cnt++; pin_bytes += (uint64_t)(mend - mstart);
+            if ((pin_cnt % 1000) == 0) {
+                fprintf(stderr, "[HIP-PIN] calls=%d pinned_bytes=%.1fMB total_pinned=%.1fMB\n",
+                    pin_cnt, (double)pin_bytes/1048576, (double)g_total_pinned_bytes/1048576);
+            }
+        }
     } else {
         (void)cudaGetLastError();
+        {
+            static int pin_fail = 0;
+            if ((++pin_fail % 1000) == 0) {
+                fprintf(stderr, "[HIP-PIN] FAIL count=%d err=%s\n", pin_fail, cudaGetErrorString(ce));
+            }
+        }
     }
 
     std::vector<std::pair<uintptr_t, uintptr_t>> nregs;

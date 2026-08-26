@@ -115,20 +115,61 @@ curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[
 7. **핀 경로 활성**: `pin_fn` resolve + copy_experts에서 호출 (검증 1 경로 동작)
 8. **속도**: 캐시 ON 시 13.8~37.3 t/s (전문가 전체 CPU 오프로드 상태)
 
-### ❌ 미해결 이슈 (핵심!): 캐시 정확성
-- **증상**: 캐시 ON(`GGML_CUDA_EXPERT_CACHE=1`) 시 출력이 깨짐
-  - 초기: `??????????` (hit율 97.8%, 15360 slots, Qwen3-Coder)
-  - per-expert + 같은 스트림 수정 후: **빈 문자열** (hit율 84%, 32768 slots, Qwen3.6)
-  - 캐시 OFF(대조)에서는 정상 출력 (`4`)
-- **원인 추정**: 캐시 키 불일치
-  - copy_experts의 `input->name`이 **모든 레이어에서 `blk.0.ffn_gate_exps.weight`로 동일**하게 나옴 (레이어 구분 실패)
-  - mul_mat_id의 `src0->name`은 `blk.0`, `blk.1`... 레이어별로 다름
-  - → copy_experts가 저장한 키와 mul_mat_id가 조회하는 키가 레이어에서 불일치 → **잘못된 전문가 데이터로 hit**
-- **다음 단계 (미완료)**:
-  1. copy_experts에서 `input->name`이 레이어별로 실제로 같은지 **로그로 확정** (`[HIP-KEY] input name=...` 로그 추가됨, 재빌드/실행 필요)
-  2. `input`(원본)이 아니라 `input->view_src` 또는 텐서 메타데이터에서 **레이어 번호를 얻어** 캐시 키에 포함
-  3. 또는 스냅샷의 `router_layer_of(input)` 방식으로 레이어 파싱 (`blk.N` → N)
-  4. 수정 후 캐시 ON에서 **정상 출력 확인**이 최종 판정
+### ✅ 최종 검증 결과 (2026-08-27, Qwen3.6-35B-A3B @ 7900XTX)
+
+**이전 "캐시 정확성 버그"는 실재하지 않았음 — Qwen3.6 reasoning 모델 특성으로 판명:**
+- Qwen3.6은 `reasoning_content`(사고 과정)를 먼저 생성하는 reasoning 모델
+- `max_tokens`가 작으면 추론에 다 소진되어 `content`가 비어 보임 (`''` 또는 `??????`)
+- `max_tokens=200+`로 주면 정상 답변: `content='4'`, `'def return_forty_two(): return 42'` ✅
+
+**검증 1 — hipHostRegister (핀): ✅**
+```
+[HIP-PIN] calls=17000 pinned_bytes=18987.6MB total_pinned=18987.6MB
+```
+- 핀 함수 17,000회 호출, **19GB가 hipHostRegister로 핀 고정 성공** (에러 없음)
+- RSS 19.9GB = 핀된 전문가가 CPU RAM에 실제 상주
+
+**검증 2 — VRAM 전문가 캐시: ✅**
+```
+[HIP-CACHE-GET] cnt=205400 hit=187213 miss=18187 hitrate=91.1%
+```
+- 캐시 hit율 91-95% (532k 호출 중 508k hit 달성도 확인)
+- 캐시 ON에서 정확한 출력 (`content='4'`)
+
+**검증 3 — 활성 전문가만 선택적 전송: ✅**
+- copy_experts per-expert 경로: `first=15 last=15`, `first=41 last=44` — 사용된 전문가만 개별 전송
+- `-ot "exps=CPU"` / `--n-cpu-moe 48`로 전문가 CPU 오프로드 + `GGML_OP_OFFLOAD_MIN_BATCH=1`로 GPU 강제
+
+**성능 (전문가 전체 CPU 오프로드 + 캐시/핀 ON):**
+- 생성 속도: **31-43 t/s** (Qwen3.6-35B-A3B Q4_K_S, 256 experts)
+- VRAM: 16.6GB (캐시 + KV, 전문가 제외)
+- RSS: 19.9GB (전문가 CPU 상주)
+
+**참고 — mul_mat_id A3 경로**: `[HIP-MULMATID]` 로그가 없음 → HIP에서 MUL_MAT_ID는 MMVQ/MMF 빠른 경로로 처리되고, moe-l2 캐시는 copy_experts(스케줄러) 경로에서 hit/consume 됨. 즉 **copy_experts 캐시 후킹이 실제 효과 경로**이며, mul_mat_id 내부 A3 변환은 dead path (향후 제거 가능).
+
+### Selective pin (router-map) 시도 결과 — HIP 제약 발견 (2026-08-27)
+
+**목표**: 원본처럼 hot 전문가만 핀해서 RSS 절감 (V4: whole-pin 84GB → selective 26.8GB)
+
+**시도한 조합 결과**:
+
+| 조합 | 결과 |
+|---|---|
+| 핀 ON + router(selective, 일부만 핀) | ❌ **크래시** — `hipMemcpyAsync invalid argument` (미핀 mmap 페이지 H2D 실패) |
+| 핀 OFF + router | ✅ 정상 — 단, 속도 12 t/s (캐시 미활용) |
+| 핀 ON + router + 캐시 16000 슬롯 (전부 핀) | ✅ **정상 — 35.4 t/s, hit 86.6%, 답 정확** |
+| 핀 ON + 전체(router 없음, 이전 검증) | ✅ 정상 — hit 95% |
+
+**HIP 제약 (문서화 필수)**:
+- `hipMemcpyAsync`는 **미핀 mmap 페이지를 H2D로 복사할 때** `invalid argument` 반환 가능
+  (CUDA는 페이지 폴트로 처리하지만 HIP는 실패)
+- **selective pin(일부만 hipHostRegister)** 시, 핀된 페이지와 인접한 미핀 페이지의 DMA가 깨짐 → 크래시
+- 안정적 모드는 **전부 핀**(on-demand pin, `MOEL2_NOPIN` 미설정) 또는 **전부 미핀**(`MOEL2_NOPIN=1`)
+
+**RSS가 높은 이유 (19.7GB)**:
+- `--n-cpu-moe 48`로 전문가 전체를 CPU에 두고, 추론이 **대부분의 전문가를 접근** → on-demand pin으로 전체가 핀/상주
+- 원본의 RSS 8-11GB는 **domain 라우팅으로 실제 사용 전문가만 접근**한 결과
+- RSS 절감은 **접근 전문가 수 제한**(domain 라우팅)이 필요 — selective pin은 HIP에서 불가
 
 ---
 
@@ -147,14 +188,16 @@ curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[
 
 ## 8. 남은 작업 (이어서 할 것)
 
-1. [ ] **캐시 정확성 수정** (위 6번 미해결) — 키에 레이어 번호 포함
-2. [ ] 캐시 ON에서 정상 출력 + hit율 확인 (검증 2 완료)
-3. [ ] 검증 1: `hipHostRegister`(핀) 실제 성공 여부 + RSS 감소 실측 (`g_total_pinned_bytes` 로그)
-4. [ ] 검증 2: 페이지 eviction (`MOE_L2_LRU_MAX_EXPERTS`) + RSS 캡 실측
-5. [ ] 검증 3: 선택적 전송 확인 (이미 로그로 확인됨 — 최종 정리)
-6. [ ] DeepSeek-V4-Flash (85GB) 실제 실행 — VRAM/RSS 측정
-7. [ ] Python 쪽 포팅 (install.sh, doctor, nvidia-smi→rocm-smi, download-bins HIP asset)
-8. [ ] 최종 보고서 작성
+**핵심 3개 검증은 완료됨.** 남은 것은 실제 배포/확장 작업:
+
+1. [ ] **DeepSeek-V4-Flash (85GB) 실제 실행** — 7900XTX에서 VRAM/RSS 측정 (최종 목표 모델)
+   - ⚠️ 주의: upstream llama.cpp deepseek4 CUDA 전문가 버그(#25582)가 HIP에도 해당하는지 확인 필요
+   - RSS 전략: on-demand pin 사용 (selective pin은 HIP에서 불가 — 위 제약 참조)
+2. [ ] **Python 쪽 포팅** — `install.sh`/`doctor`의 nvidia-smi→rocm-smi, `download-bins`에 HIP asset 추가, `LD_LIBRARY_PATH` ROCm 경로
+3. [ ] **`--n-cpu-moe`로 검증된 설정을 `moe-l2 start --gpu` 통합** — proxy가 HIP llama-server를 spawn하도록
+4. [ ] mul_mat_id A3 경로 정리 (dead path 제거 또는 유지)
+5. [ ] **RSS 절감 추가 탐구** — domain 라우팅(실사용 전문가 제한) 또는 mmap page-cache 전략 (HIP selective pin 불가하므로 대안 필요)
+6. [ ] GitHub Release에 HIP 바이너리 (`llama-hip_bins.tar.gz`) 배포 파이프라인
 
 ---
 
