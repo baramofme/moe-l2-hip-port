@@ -1,0 +1,27 @@
+# 빌드 산출물
+build-moe-hip/
+build-stock-hip/
+build/
+*.o
+*.so
+*.a
+*.log
+*.pid
+__pycache__/
+.venv/
+
+# llama.cpp 전체 소스 (upstream에서 재클론 가능) — 패치된 파일만 보존
+llama.cpp/*
+!llama.cpp/ggml/
+llama.cpp/ggml/*
+!llama.cpp/ggml/src/
+llama.cpp/ggml/src/*
+!llama.cpp/ggml/src/ggml-backend.cpp
+!llama.cpp/ggml/src/ggml-cuda/
+llama.cpp/ggml/src/ggml-cuda/*
+!llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu
+!llama.cpp/ggml/src/ggml-cuda/expert-cache.cu
+!llama.cpp/ggml/src/ggml-cuda/expert-cache.cuh
+!llama.cpp/ggml/src/ggml-cuda/vendors/
+llama.cpp/ggml/src/ggml-cuda/vendors/*
+!llama.cpp/ggml/src/ggml-cuda/vendors/hip.h
