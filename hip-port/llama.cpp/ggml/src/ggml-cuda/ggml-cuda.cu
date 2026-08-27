@@ -7,6 +7,7 @@
 #include "ggml-cuda/allreduce.cuh"
 #include "ggml-cuda/common.cuh"
 #include "ggml-cuda/expert-cache.cuh"
+#include "ggml-cuda/expert-staging.h"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
@@ -5793,6 +5794,20 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_cuda_expert_unpin_host") == 0) {
         return (void *)ggml_cuda_expert_unpin_host;
     }
+#if defined(GGML_USE_HIP)
+    // [moe-l2 HIP] bounce staging engine (never register the model mmap).
+    // CUDA builds keep the selective-pin path; these lookups return
+    // nullptr there so the scheduler uses the original pin + direct H2D.
+    if (strcmp(name, "ggml_cuda_expert_staging_copy") == 0) {
+        return (void *)ggml_cuda_expert_staging_copy;
+    }
+    if (strcmp(name, "ggml_cuda_expert_staging_evict") == 0) {
+        return (void *)ggml_cuda_expert_staging_evict;
+    }
+    if (strcmp(name, "ggml_cuda_expert_staging_free") == 0) {
+        return (void *)ggml_cuda_expert_staging_free;
+    }
+#endif
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;
     }

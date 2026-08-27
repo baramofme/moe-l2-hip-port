@@ -1758,6 +1758,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     static bool cache_set_resolved = false;
                     static void * (*cache_stream_fn)(ggml_backend_t) = nullptr;
                     static bool cache_stream_resolved = false;
+                    static bool (*staging_copy_fn)(const void *, void *, size_t, void *) = nullptr;
+                    static bool staging_copy_resolved = false;
+                    static void (*staging_evict_fn)(const void *, size_t) = nullptr;
+                    static bool staging_evict_resolved = false;
                     if (!pin_resolved) {
                         auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
                         if (cuda_dev) {
@@ -1773,6 +1777,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_cache_set");
                                 cache_stream_fn = (void * (*)(ggml_backend_t))
                                     ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_get_backend_stream");
+                                // [moe-l2 HIP] bounce staging engine. Resolves only
+                                // on HIP builds; on CUDA these stay null so the
+                                // original selective-pin + direct-H2D path is used.
+                                staging_copy_fn = (bool (*)(const void *, void *, size_t, void *))
+                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_copy");
+                                staging_evict_fn = (void (*)(const void *, size_t))
+                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_evict");
                             }
                         }
                         pin_resolved = true;
@@ -1780,8 +1791,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         cache_get_resolved = true;
                         cache_set_resolved = true;
                         cache_stream_resolved = true;
-                        fprintf(stderr, "[HIP-PROC] pin=%p copy=%p get=%p set=%p stream=%p\n",
-                            (void *)pin_fn, (void *)cache_copy_fn, (void *)cache_get_fn, (void *)cache_set_fn, (void *)cache_stream_fn);
+                        staging_copy_resolved = true;
+                        staging_evict_resolved = true;
+                        fprintf(stderr, "[HIP-PROC] pin=%p copy=%p get=%p set=%p stream=%p staging_copy=%p staging_evict=%p\n",
+                            (void *)pin_fn, (void *)cache_copy_fn, (void *)cache_get_fn, (void *)cache_set_fn, (void *)cache_stream_fn,
+                            (void *)staging_copy_fn, (void *)staging_evict_fn);
                     }
 
                     // group consecutive experts and copy them together — but
@@ -1822,7 +1836,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 // unregistered mmap page adjacent to a registered
                                 // one fails with "invalid argument". Use MOEL2_NOPIN=1
                                 // to disable pinning entirely (slower, lower pinned RSS).
-                                if (pin_fn && (!getenv("MOEL2_NOPIN") || !getenv("MOEL2_NOPIN")[0])) {
+                                // [moe-l2 HIP staging] when the bounce engine is active
+                                // (HIP builds), never register the mmap — staging copies
+                                // go through pinned buffers instead. CUDA keeps pinning.
+                                if (pin_fn && !staging_copy_fn && (!getenv("MOEL2_NOPIN") || !getenv("MOEL2_NOPIN")[0])) {
                                     pin_fn((const uint8_t *)input->data + off, copy_len);
                                 }
 
@@ -1845,12 +1862,25 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 if (!cache_hit) {
                                     // miss: H2D fill on the same stream, then
                                     // write back to the cache.
-                                    ggml_backend_tensor_set_async(split_backend,
-                                        input_cpy,
-                                        (const uint8_t *)input->data + off, off,
-                                        copy_len);
-                                    if (cache_set_fn) {
-                                        cache_set_fn(cache_key, copy_len, dst_gpu, cs);
+                                    if (staging_copy_fn) {
+                                        // [moe-l2 HIP] bounce: CPU memcpy into a
+                                        // pinned buffer, then async H2D. Never DMA
+                                        // directly from the unpinned mmap (crashes
+                                        // on HIP with partial registration).
+                                        staging_copy_fn((const uint8_t *)input->data + off, dst_gpu, copy_len, cs);
+                                    } else {
+                                        ggml_backend_tensor_set_async(split_backend,
+                                            input_cpy,
+                                            (const uint8_t *)input->data + off, off,
+                                            copy_len);
+                                    }
+                                    const void * stored = cache_set_fn ? cache_set_fn(cache_key, copy_len, dst_gpu, cs) : nullptr;
+                                    // [moe-l2 HIP] expert is now safe in the VRAM
+                                    // LRU cache: its next access is a D2D cache hit,
+                                    // so drop the mmap pages to bound RSS. Only
+                                    // evict when the cache actually stored it.
+                                    if (stored && staging_evict_fn) {
+                                        staging_evict_fn((const uint8_t *)input->data + off, copy_len);
                                     }
                                 }
                             }
