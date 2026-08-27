@@ -3,6 +3,7 @@
 > **목적**: 이 문서를 읽으면 중단된 HIP 포팅 작업을 그대로 이어갈 수 있다.
 > **최종 갱신**: 2026-08-27
 > **작업 위치**: `hip-port/` (이 저장소 내부) + 원본 스냅샷 `references/llama.cpp-gpu-lru-cache/`
+> **Git 저장소**: `https://github.com/baramofme/moe-l2-hip-port` (main, 커밋 3개: 228ef44 → b355ed0 → 0c844e5)
 
 ---
 
@@ -41,8 +42,11 @@ HIP_VISIBLE_DEVICES=0                           # GPU 0 사용 (free)
 
 ## 3. HIP 빌드 방법 (검증 완료)
 
+> ⚠️ **빌드 작업 트리**: `hip-port/llama.cpp/` (저장소 내부, 2026-08-27 이동 완료 — 이전 `/tmp/moe-port-work`는 재부팅으로 소실됨).
+> CMakeCache가 옛 경로를 가리키면 `rm -rf build-moe-hip` 후 재configure 필요.
+
 ```bash
-cd llama.cpp
+cd hip-port/llama.cpp
 HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
   cmake -S . -B build-moe-hip -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1100 \
   -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON
@@ -52,6 +56,7 @@ cmake --build build-moe-hip --config Release -j$(nproc) --target llama-server
 - 빌드 성공 확인: `build-moe-hip/bin/llama-server` + `libggml-hip.so`
 - moe-l2 심볼 확인: `nm -D build-moe-hip/bin/libggml-hip.so | grep ggml_cuda_expert`
   - `ggml_cuda_expert_pin_host`, `ggml_cuda_expert_cache_get/set/init/free/...` 10개 심볼
+- 빌드 산출물(`build-moe-hip/`)은 `.gitignore`로 제외되어 커밋되지 않음
 
 ---
 
@@ -69,7 +74,7 @@ cmake --build build-moe-hip --config Release -j$(nproc) --target llama-server
 | `ggml/src/ggml-cuda/vendors/hip.h` | HIP 매핑 추가: `cudaHostRegisterMapped→0`, `cudaPointerAttributes→hipPointerAttribute_t`, `cudaPointerGetAttributes`, `cudaMemoryTypeDevice`, `cudaStreamCreate`, `cudaErrorUnknown` |
 | `ggml/src/ggml-cuda/expert-cache.cu/.cuh` | **새 파일** (moe-l2 LRU 캐시). HIP용: `cuda_runtime.h` include 제거, `common.cuh` 먼저 include |
 | `ggml/src/ggml-cuda/ggml-cuda.cu` | 전역 `g_pin_mtx`/`g_pinned_ranges`/`g_total_pinned_bytes`, `ggml_cuda_experts_on_host()`, `ggml_cuda_expert_pin_host()`, `ggml_cuda_expert_unpin_host()`, `ggml_cuda_get_backend_stream()`, `ggml_cuda_mul_mat_id` A3 변환(per-expert 캐시), proc_address 노출, `<unistd.h>`/`<sys/mman.h>` include |
-| `ggml/src/ggml-backend.cpp` | copy_experts per-expert 캐시 후킹 (proc_address로 pin/cache/stream resolve), `<string>` include |
+| `ggml/src/ggml-backend.cpp` | copy_experts per-expert 캐시 후킹 (proc_address로 pin/cache/stream resolve), **router-map 로드(`MOE_L2_ROUTER_FILE`)** + on-demand pin, `<string>`/`<unordered_set>` include |
 
 ### 4.3. 재적용 방법
 ```bash
@@ -88,17 +93,42 @@ cp /home/baramofme/IdeaProjects/moe-l2/hip-port/patched-llama-src/ggml/src/ggml-
 
 ## 5. 검증 실행 방법
 
+### 5.1. 최신 안정 설정 (권장 — router-map + on-demand pin + 캐시 16000 슬롯)
+```bash
+cd hip-port/llama.cpp
+MODEL=/mnt/nvmedata/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_S.gguf
+env LD_LIBRARY_PATH=build-moe-hip/bin HIP_VISIBLE_DEVICES=0 \
+  GGML_CUDA_EXPERT_CACHE=1 GGML_OP_OFFLOAD_MIN_BATCH=1 MOE_L2_CACHE_SLOTS=16000 \
+  MOE_L2_ROUTER_FILE=/tmp/qwen36_top32.map \
+  ./build-moe-hip/bin/llama-server \
+  -m "$MODEL" --host 127.0.0.1 --port 18135 -ngl 99 -c 2048 \
+  --n-cpu-moe 48 --no-warmup -fit off --no-ui
+# 결과: 35.4 t/s, hit 86.6%, 정확한 출력
+```
+> ⚠️ `MOE_L2_N_LAYERS=48` 대신 **`MOE_L2_CACHE_SLOTS=16000` 명시** 권장 — router-map 파일의 `# EXPERT_TOTAL` 주석이 슬롯을 768로 줄여버려 hit율 0% 발생 (thrash). 명시적 슬롯 수가 우선.
+
+### 5.2. 기본 검증 (router 없이, 캐시+핀)
 ```bash
 cd llama.cpp
 MODEL=/mnt/nvmedata/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_S.gguf
-# 캐시 ON + 전문가 CPU 오프로드 + 선택적 전송
 env LD_LIBRARY_PATH=build-moe-hip/bin HIP_VISIBLE_DEVICES=0 \
   GGML_CUDA_EXPERT_CACHE=1 GGML_OP_OFFLOAD_MIN_BATCH=1 MOE_L2_N_LAYERS=48 \
   ./build-moe-hip/bin/llama-server \
   -m "$MODEL" --host 127.0.0.1 --port 18122 -ngl 99 -c 2048 \
   -ot "exps=CPU" -fit off --no-ui
-# 추론 테스트
-curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[{"role":"user","content":"What is 2+2? Answer with just the number."}],"max_tokens":10,"stream":false}'
+# 추론 테스트 — max_tokens=200+ 필수 (Qwen3.6 reasoning 모델)
+curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[{"role":"user","content":"What is 2+2? Answer with just the number."}],"max_tokens":200,"stream":false}'
+# → content='4' 확인 (max_tokens가 작으면 reasoning_content에 소진되어 content가 빈 문자열로 보임)
+```
+
+**router map 파일 생성** (top-K hot 전문가):
+```python
+# Qwen3.6-35B-A3B: 48 layers × 256 experts, top-32/layer
+import random; random.seed(42)
+with open('/tmp/qwen36_top32.map','w') as f:
+    f.write("# EXPERT_TOTAL 256\n")
+    for l in range(48):
+        f.write(f"{l} " + " ".join(map(str, sorted(random.sample(range(256),32)))) + "\n")
 ```
 
 ---
@@ -171,6 +201,11 @@ curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[
 - 원본의 RSS 8-11GB는 **domain 라우팅으로 실제 사용 전문가만 접근**한 결과
 - RSS 절감은 **접근 전문가 수 제한**(domain 라우팅)이 필요 — selective pin은 HIP에서 불가
 
+### ✅ GitHub 푸시 상태 (2026-08-27)
+- **저장소**: `https://github.com/baramofme/moe-l2-hip-port` (main)
+- **커밋 3개**: `228ef44`(초기 이식+문서) → `b355ed0`(검증 완료) → `0c844e5`(selective pin + HIP 제약)
+- 원본 저장소 `hip-port-porting` 브랜치(`8bec677`)에도 로컬 보존됨
+
 ---
 
 ## 7. 알려진 함정 / 참고
@@ -183,6 +218,8 @@ curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[
 4. **스트림 race**: 캐시 D2D copy는 H2D fill과 **같은 스트림**에서 실행해야 함 (스냅샷 P0 fix: `ggml_cuda_get_backend_stream` re-fetch per expert)
 5. **`experts_on_host`**: `hipPointerGetAttributes`가 mmap CPU 포인터를 device로 오판할 수 있음 → `-ot "exps=CPU"` + `GGML_OP_OFFLOAD_MIN_BATCH=1`로 강제
 6. **`cudaHostRegisterMapped=0`**: HIP에 mapped 플래그 없음. HIP의 핀은 `hipHostRegister`(portable)만 가능 → GPU 직접 DMA 읽기 대신 `hipMemcpyAsync` H2D 경로로 폴백. **discrete RDNA3에서 성능 영향 실측 필요** (검증 1의 미완 부분)
+7. **`MOE_L2_ROUTER_FILE` + 슬롯 수 함정**: router-map 파일의 `# EXPERT_TOTAL 256` 주석을 `maybe_init`가 읽어 슬롯을 768로 줄임 → hit율 0% (LRU thrash). **반드시 `MOE_L2_CACHE_SLOTS=16000` 명시** (env가 최우선)
+8. **HIP selective pin 불가**: 일부만 `hipHostRegister`하면 인접 미핀 페이지 H2D가 `invalid argument`로 크래시. 안정적 모드는 전부 핀(on-demand) 또는 전부 미핀(`MOEL2_NOPIN=1`)
 
 ---
 
@@ -206,17 +243,24 @@ curl -s http://127.0.0.1:18122/v1/chat/completions -d '{"model":"q","messages":[
 ```
 hip-port/
 ├── PROGRESS.md              # 이 문서
-├── moe-l2-hip-port.patch    # 최신 llama.cpp에 적용한 diff (git apply 가능)
-├── patched-llama-src/       # 패치 적용된 전체 소스 (통째 교체용)
+├── .gitignore               # 빌드 산출물/llama.cpp 전체 제외 (패치된 파일만 추적)
+├── llama.cpp/               # 실제 빌드 작업 트리 (패치 적용됨, build-moe-hip 포함)
 │   └── ggml/src/
-│       ├── ggml-backend.cpp
+│       ├── ggml-backend.cpp          # copy_experts 캐시+router-map 후킹
 │       └── ggml-cuda/
-│           ├── ggml-cuda.cu
-│           ├── expert-cache.cu
+│           ├── ggml-cuda.cu          # 핀/캐시/experts_on_host/stream + A3 변환
+│           ├── expert-cache.cu       # LRU 캐시 (HIP 호환)
 │           ├── expert-cache.cuh
-│           └── vendors/hip.h
-├── build.log                # 마지막 HIP 빌드 로그 (성공)
-└── server-verify.log        # 검증 서버 실행 로그 (캐시 hit율 84% 포함)
+│           └── vendors/hip.h         # HIP 매핑 (cudaHostRegisterMapped=0 등)
+├── patched-llama-src/       # 패치된 소스 백업 (통째 교체용 — git에 커밋됨)
+│   └── ggml/src/ (위와 동일 5개 파일)
+├── moe-l2-hip-port.patch    # 초기 diff (git apply 가능 — 이후 router-map 추가분 미포함)
+├── build.log / configure.log        # 빌드 로그
+└── server-verify.log        # 검증 서버 로그
 ```
+
+> ⚠️ `moe-l2-hip-port.patch`는 초기 이식분만 포함. 이후 selective pin/router-map 추가는
+> `patched-llama-src/`(최신) 또는 `llama.cpp/` 작업 트리를 직접 사용할 것.
+> Git 히스토리는 `github.com/baramofme/moe-l2-hip-port` (커밋 0c844e5까지).
 
 원본 스냅샷(CUDA 패치 포함 llama.cpp): `references/llama.cpp-gpu-lru-cache/`
