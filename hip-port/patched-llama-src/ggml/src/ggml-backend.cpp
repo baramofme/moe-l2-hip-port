@@ -1762,6 +1762,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     static bool staging_copy_resolved = false;
                     static void (*staging_evict_fn)(const void *, size_t) = nullptr;
                     static bool staging_evict_resolved = false;
+                    static void (*staging_prefetch_fn)(const void *, size_t) = nullptr;
+                    static bool staging_prefetch_resolved = false;
                     if (!pin_resolved) {
                         auto * cuda_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
                         if (cuda_dev) {
@@ -1784,6 +1786,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_copy");
                                 staging_evict_fn = (void (*)(const void *, size_t))
                                     ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_evict");
+                                staging_prefetch_fn = (void (*)(const void *, size_t))
+                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_prefetch");
                             }
                         }
                         pin_resolved = true;
@@ -1793,9 +1797,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         cache_stream_resolved = true;
                         staging_copy_resolved = true;
                         staging_evict_resolved = true;
-                        fprintf(stderr, "[HIP-PROC] pin=%p copy=%p get=%p set=%p stream=%p staging_copy=%p staging_evict=%p\n",
+                        staging_prefetch_resolved = true;
+                        fprintf(stderr, "[HIP-PROC] pin=%p copy=%p get=%p set=%p stream=%p staging_copy=%p staging_evict=%p staging_prefetch=%p\n",
                             (void *)pin_fn, (void *)cache_copy_fn, (void *)cache_get_fn, (void *)cache_set_fn, (void *)cache_stream_fn,
-                            (void *)staging_copy_fn, (void *)staging_evict_fn);
+                            (void *)staging_copy_fn, (void *)staging_evict_fn, (void *)staging_prefetch_fn);
                     }
 
                     // group consecutive experts and copy them together — but
@@ -1881,6 +1886,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     // evict when the cache actually stored it.
                                     if (stored && staging_evict_fn) {
                                         staging_evict_fn((const uint8_t *)input->data + off, copy_len);
+                                    }
+                                    // [moe-l2 HIP] the next expert in this group is
+                                    // copied right after this one; prefetch its mmap
+                                    // pages so that copy hits resident pages instead
+                                    // of a cold page-fault (1.7ms measured).
+                                    if (staging_prefetch_fn && eid < last_id) {
+                                        const size_t next_off = off + expert_size;
+                                        staging_prefetch_fn((const uint8_t *)input->data + next_off, copy_len);
                                     }
                                 }
                             }

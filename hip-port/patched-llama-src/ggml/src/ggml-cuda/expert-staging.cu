@@ -116,6 +116,19 @@ void ggml_cuda_expert_staging_evict(const void * addr, size_t bytes) {
 #endif
 }
 
+void ggml_cuda_expert_staging_prefetch(const void * addr, size_t bytes) {
+    if (!addr || bytes == 0) {
+        return;
+    }
+    const size_t ps = (size_t)getpagesize();
+    uintptr_t start = (uintptr_t)addr & ~(uintptr_t)(ps - 1);
+    uintptr_t end   = ((uintptr_t)addr + bytes + ps - 1) & ~(uintptr_t)(ps - 1);
+    if (end <= start) {
+        return;
+    }
+    madvise((void *)start, end - start, MADV_WILLNEED);
+}
+
 void ggml_cuda_expert_staging_free(void) {
     std::lock_guard<std::mutex> lk(g_init_mtx);
     if (!g_initialized) {

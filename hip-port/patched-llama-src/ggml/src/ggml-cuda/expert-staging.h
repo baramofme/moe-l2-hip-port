@@ -28,5 +28,11 @@ bool ggml_cuda_expert_staging_copy(const void * src, void * dst_gpu, size_t byte
 // cache. Page-aligned internally. No-op when MADV_PAGEOUT is unavailable.
 void ggml_cuda_expert_staging_evict(const void * addr, size_t bytes);
 
+// Best-effort prefetch of the mmap pages [addr, addr+bytes) into the page
+// cache (MADV_WILLNEED). Used before an expert that was just evicted is
+// accessed again, so the next copy hits resident pages instead of a cold
+// page-fault (measured 1.7ms for 1.55MB). Page-aligned internally.
+void ggml_cuda_expert_staging_prefetch(const void * addr, size_t bytes);
+
 // Release all staging buffers and events. Safe to call even when uninitialized.
 void ggml_cuda_expert_staging_free(void);

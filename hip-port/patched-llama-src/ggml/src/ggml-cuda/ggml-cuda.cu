@@ -5804,6 +5804,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_cuda_expert_staging_evict") == 0) {
         return (void *)ggml_cuda_expert_staging_evict;
     }
+    if (strcmp(name, "ggml_cuda_expert_staging_prefetch") == 0) {
+        return (void *)ggml_cuda_expert_staging_prefetch;
+    }
     if (strcmp(name, "ggml_cuda_expert_staging_free") == 0) {
         return (void *)ggml_cuda_expert_staging_free;
     }

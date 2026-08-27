@@ -347,3 +347,29 @@ hotset 30-100, VRAM 캐시 0-100슬롯, 2000토큰 x 6 experts, hot 85%.
 **최종: bounce-only (VRAM 캐시 + MADV_PAGEOUT) 확정.** zero-copy mapped 는 fallback 후보에서
 제외. VRAM 캐시 히트(30us)가 zero-copy(213us)를 압도하고, expert 슬라이스 크기가 KV 캐시 대비
 미미해 zero-copy의 VRAM 절약 이점도 실익 없음.
+
+### 실측 검증 — Qwen3.6-35B-A3B (2026-08-28) ✅
+
+llama-server (bounce staging engine 빌드), Qwen3.6-35B-A3B-expert_clone_logic-UD-Q4_K_XL (22GB),
+`-ngl 99 --n-cpu-moe 48 -ot "exps=CPU" -c 4096`, `MOE_L2_CACHE_SLOTS=16000 MOE_L2_N_LAYERS=48`.
+
+| 지표 | 값 | 판정 |
+|---|---|---|
+| crash (invalid argument) | 0건 | ✅ HIP 크래시 해결 |
+| 캐시 hit율 | 90.5% (217k hit / 22.9k miss) | ✅ VRAM LRU 정상 |
+| RSS | 로드 19.8GB -> 생성 중 7.98GB (-60%) | ✅ PAGEOUT eviction 실증 |
+| 생성 속도 | 11.0 t/s (200 tokens) | 무겁지만 정상 |
+| 출력 | reasoning + content 정상 | ✅ |
+
+핵심: staging 경로로 로드부터 생성까지 crash 0. RSS -60% 는 MADV_PAGEOUT eviction 의
+실모델 증거. hit율 90.5% 로 VRAM LRU 정상. Qwen 은 전문가가 작아(~1MB) 캐시 이득이
+크지 않은 모델이라 11 t/s 는 예상 범위 (DS/V4 처럼 전문가가 큰 모델에서 이득 큼).
+
+### MADV_WILLNEED prefetch (2026-08-28)
+
+copy_experts 가 같은 그룹의 expert 를 연속 처리하는 점을 활용 — eid 처리 후 다음
+expert(eid+1) 의 mmap 페이지에 WILLNEED 를 미리 줘 콜드 fault(1.7ms) 회피.
+- expert-staging.h/.cu: `ggml_cuda_expert_staging_prefetch()` (MADV_WILLNEED, 페이지 정렬)
+- ggml-cuda.cu: proc_address 등록
+- ggml-backend.cpp: resolve + miss 경로에서 `eid < last_id` 시 다음 expert prefetch
+- HIP 빌드 llama-server 통과, 백업 트리 미러링 완료
