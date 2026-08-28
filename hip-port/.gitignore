@@ -22,6 +22,13 @@ llama.cpp/ggml/src/ggml-cuda/*
 !llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu
 !llama.cpp/ggml/src/ggml-cuda/expert-cache.cu
 !llama.cpp/ggml/src/ggml-cuda/expert-cache.cuh
+!llama.cpp/ggml/src/ggml-cuda/expert-staging.cu
+!llama.cpp/ggml/src/ggml-cuda/expert-staging.h
 !llama.cpp/ggml/src/ggml-cuda/vendors/
 llama.cpp/ggml/src/ggml-cuda/vendors/*
 !llama.cpp/ggml/src/ggml-cuda/vendors/hip.h
+!llama.cpp/tools/
+llama.cpp/tools/*
+!llama.cpp/tools/server/
+llama.cpp/tools/server/*
+!llama.cpp/tools/server/server.cpp

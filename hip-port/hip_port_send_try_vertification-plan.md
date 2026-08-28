@@ -373,3 +373,55 @@ expert(eid+1) 의 mmap 페이지에 WILLNEED 를 미리 줘 콜드 fault(1.7ms) 
 - ggml-cuda.cu: proc_address 등록
 - ggml-backend.cpp: resolve + miss 경로에서 `eid < last_id` 시 다음 expert prefetch
 - HIP 빌드 llama-server 통과, 백업 트리 미러링 완료
+
+---
+
+## 속도/VRAM 해결 실측 (2026-08-28) — 직접 DMA + 도메인 스위치
+
+이전 섹션까지의 결론(11 t/s, RSS -60% 대가)을 정정한 최종 실측. Qwen3.6-35B-A3B
+Q4_K_XL (22GB, ExpertClone) @ RX 7900 XTX / ROCm 7.2.3 / GPU0, 캐시 슬롯 + 도메인 테이블 조합.
+
+### 1. 원인 규명 (A/B 실측)
+
+| 설정 | gen t/s | NVMe majflt | RSS / VRAM |
+|---|---|---|---|
+| 전량 즉시 방출 (기존 staging) | 14.3 | 537K/60tok | ~9 GB |
+| LRU 캡 4000 (v3.1 이식 시도) | 8.3 | 347K | ~11 GB |
+| LRU 캡 12000 | 14.8 | 72K | ~16 GB |
+| **방출 OFF (NO_EVICT) + pairs8** | **37.7** | **0** | 21 GB / 16.6 GB |
+| **직접 DMA (NO_STAGING) + 캐시4500 + math 테이블** | **19.5** | **0** | 21 GB / **9.7 GB** |
+| **직접 DMA (NO_STAGING) + 캐시8000 + math 테이블** | **21.3** | **0** | 21 GB / **11.8 GB** |
+
+- **eviction(MADV_PAGEOUT) "VRAM 캐시 set 직후 전량 방출"이 속도를 죽인 원인**: hot
+  전문가 페이지까지 RAM에서 내보내, VRAM LRU 미스(11%)마다 NVMe 재읽기(1.7ms) 폭주.
+  `MOE_L2_NO_EVICT=1`로 끄면 majflt 0 + 37.7 t/s (RAM 94GB 머신에서는 RSS 21GB가 무해).
+- **직접 DMA(miss 경로)**: `MOE_L2_NO_STAGING=1` — 스테이징(memcpy+H2D+뮤텍스/이벤트, 209µs)
+  대신 CUDA와 동일한 **on-demand 핀 + hipMemcpyAsync 직접 DMA (127µs, CPU 바운스 없음)** 경로 선택.
+  작은 캐시(4500, miss 지배)에서 16.9 → 19.5 t/s, hit 64→75%.
+- **도메인 스위치 (per-domain table)**: `/moe-set-domain` 엔드포인트 + `ggml_backend_router_*`
+  런타임 테이블 스왑. 캐시 8000 + math 테이블 → hit **90.1%** (테이블 없이 55%).
+- **RDNA3 계산 천장 ~38 t/s**: 전체 캐시(16000, VRAM 16.6GB)여도 37.7 — 그 이상은
+  7900 XTX의 이 모델 계산 한계 (transfer-bound 아님).
+
+### 2. 이번에 추가된 코드 (HIP)
+
+- `ggml-backend.cpp`: `ggml_backend_router_set_layer/clear` (extern "C", server 연동),
+  라우터 캐시 게이트를 `g_router_loaded` 기준으로 수정 (POST 테이블이 실제 적용되도록),
+  `MOE_L2_NO_STAGING` env (스테이징 미해석 → on-demand pin + 직접 DMA 경로 복원),
+  copy_experts 내 `tensor_layer`/`listed` (라우터 맵으로 VRAM 캐시 참여 제한)
+- `tools/server/server.cpp`: `POST /moe-set-domain` 라우트 — {domain, experts:{layer:[eids]}}
+  파싱 → `ggml_backend_router_clear()` + `set_layer()` (CUDA 스냅샷 재현, retain/soft_resize 생략)
+- `expert-staging.cu`: 고정 전문가 수 LRU 캡 `MOE_L2_LRU_MAX_EXPERTS=N` (v3.1 이식,
+  기본 비활성 — 작은 N에서 wide-routing은 thrash하므로 NO_EVICT가 우위)
+- `.gitignore`: `expert-staging.cu/.h`, `tools/server/server.cpp` 화이트리스트 추가
+- `patched-llama-src/` 미러링 (ggml-backend.cpp, expert-staging.cu/.h, tools/server/server.cpp)
+
+### 3. 실사용 추천 설정 (10-11GB 카드 / 94GB RAM)
+
+```
+MOE_L2_CACHE_SLOTS=8000        # VRAM ~11.8GB (12GB 카드) / 4500 → ~9.7GB (10-11GB 카드, 19.5 t/s)
+MOE_L2_NO_STAGING=1            # 직접 DMA miss 경로 (CUDA 동일 설계)
+MOE_L2_NO_EVICT=1              # NVMe 재읽기 0 (RSS는 94GB 머신에서 무해)
++ proxy: 도메인 예측 → POST /moe-set-domain (gate.py _schedule_router_switch)
+```
+결과: crash 0 / majflt 0 / VRAM 9.7-11.8 GB / **19.5-21.3 t/s** (테이블 매칭 시 hit 90%).

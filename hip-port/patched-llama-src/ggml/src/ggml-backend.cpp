@@ -42,6 +42,24 @@ static bool g_router_mode = []() {
     return env && env[0] != '\0';
 }();
 
+// [moe-l2 HIP 2026-08-28] runtime router-table swap, called by the server
+// /moe-set-domain endpoint (per-domain table switch, CUDA parity).
+extern "C" {
+void ggml_backend_router_set_layer(int layer, const int32_t * experts, int n) {
+    if (layer < 0 || experts == nullptr || n <= 0) return;
+    if ((size_t) layer >= g_router_map.size()) g_router_map.resize(layer + 1);
+    auto & s = g_router_map[layer];
+    s.clear();
+    for (int i = 0; i < n; ++i) {
+        if (experts[i] >= 0) s.insert(experts[i]);
+    }
+}
+void ggml_backend_router_clear() {
+    g_router_map.clear();
+    g_router_loaded = true;  // do not re-load MOE_L2_ROUTER_FILE over the new table
+}
+}
+
 // backend buffer type
 
 const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
@@ -1782,12 +1800,18 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 // [moe-l2 HIP] bounce staging engine. Resolves only
                                 // on HIP builds; on CUDA these stay null so the
                                 // original selective-pin + direct-H2D path is used.
-                                staging_copy_fn = (bool (*)(const void *, void *, size_t, void *))
-                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_copy");
-                                staging_evict_fn = (void (*)(const void *, size_t))
-                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_evict");
-                                staging_prefetch_fn = (void (*)(const void *, size_t))
-                                    ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_prefetch");
+                                // MOE_L2_NO_STAGING=1 revives the on-demand pin +
+                                // direct DMA path (CUDA-parity miss cost) on HIP.
+                                const char * no_staging_env = getenv("MOE_L2_NO_STAGING");
+                                const bool no_staging = no_staging_env && no_staging_env[0];
+                                if (!no_staging) {
+                                    staging_copy_fn = (bool (*)(const void *, void *, size_t, void *))
+                                        ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_copy");
+                                    staging_evict_fn = (void (*)(const void *, size_t))
+                                        ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_evict");
+                                    staging_prefetch_fn = (void (*)(const void *, size_t))
+                                        ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_expert_staging_prefetch");
+                                }
                             }
                         }
                         pin_resolved = true;
@@ -1817,11 +1841,18 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         }
                     }
                     auto copy_experts = [&](int32_t first_id, int32_t last_id) {
+                        // experiment gate: MOE_L2_NO_EVICT=1 keeps mmap pages
+                        // resident (higher RSS, avoids NVMe re-faults)
+                        static const bool no_evict = [] {
+                            const char * v = getenv("MOE_L2_NO_EVICT");
+                            return v && v[0];
+                        }();
                         const size_t expert_offset = first_id * expert_size;
                         const size_t expert_size_copy =  (last_id - first_id + 1) * expert_size;
                         const size_t padding_end = last_id < n_expert - 1 ? padding : 0;
 
                         const bool cache_active = cache_get_fn && cache_copy_fn && cache_set_fn;
+                        const int tensor_layer = router_layer_of(input);
 
                         if (cache_active) {
                             // [moe-l2] per-expert path: try cache first (D2D),
@@ -1859,8 +1890,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 // only PINNING is selective (router-listed hot
                                 // experts get hipHostRegister'd, unlisted stay
                                 // mmap'd and copy via the normal H2D path).
+                                const bool listed = !g_router_loaded ||
+                                    ((size_t) tensor_layer < g_router_map.size() &&
+                                     g_router_map[tensor_layer].count(eid));
+
                                 bool cache_hit = false;
-                                if (cache_copy_fn) {
+                                if (cache_copy_fn && listed) {
                                     cache_hit = cache_copy_fn(cache_key, dst_gpu, 0, copy_len, cs);
                                 }
 
@@ -1879,12 +1914,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                             (const uint8_t *)input->data + off, off,
                                             copy_len);
                                     }
-                                    const void * stored = cache_set_fn ? cache_set_fn(cache_key, copy_len, dst_gpu, cs) : nullptr;
+                                    const void * stored = (listed && cache_set_fn) ? cache_set_fn(cache_key, copy_len, dst_gpu, cs) : nullptr;
                                     // [moe-l2 HIP] expert is now safe in the VRAM
                                     // LRU cache: its next access is a D2D cache hit,
                                     // so drop the mmap pages to bound RSS. Only
                                     // evict when the cache actually stored it.
-                                    if (stored && staging_evict_fn) {
+                                    if (stored && staging_evict_fn && !no_evict) {
                                         staging_evict_fn((const uint8_t *)input->data + off, copy_len);
                                     }
                                     // [moe-l2 HIP] the next expert in this group is
