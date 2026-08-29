@@ -274,6 +274,26 @@ llama.cpp #20934 논의의 Wave64 제안 이식 (CMake-only, off by default):
 - persistent expert cache RFC (#24528): CPU MUL_MAT_ID + GPU hit 캐시 구조 (4x, 미머지) — 내 2107
   실험(전송 제거)과 다른 구조. V4 실측 시 이 구조도 후보.
 
+### 실험 G — batch/ubatch 크기 (prefill) — ✅ -ub 증가가 prefill +47%
+
+DocShotgun 가이드 (CPU+GPU MoE 는 `-b 4096 -ub 4096` 권장). 긴 프롬프트(774 토큰) A/B:
+
+| 설정 | prefill | gen (긴 컨텍스트) |
+|---|---|---|
+| 기본 (-b 2048 -ub 512) | 192.2 t/s | 37.6-41.8 t/s |
+| **-b 4096 -ub 4096** | **283.4 t/s (+47%)** | 38.4-40.9 t/s |
+
+**부수 발견**: 긴 프롬프트 후 gen 이 37.6-41.8 (짧은 프롬프트 33.5-34.6 보다 빠름) — 프롬프트
+처리가 expert 캐시를 워밍업 (수학 도메인 라우팅 집중) 하여 생성 hit 이 높아짐.
+
+**최선 설정 확정 (7900 XTX, Qwen3.6-35B-A3B-UD-Q4_K_S):**
+```
+GGML_OP_OFFLOAD_MIN_BATCH=1 GGML_CUDA_EXPERT_CACHE=1 MOE_L2_CACHE_SLOTS=16000
+MOE_L2_NO_STAGING=1 MOE_L2_NO_EVICT=1 MOE_L2_N_LAYERS=48
+llama-server -ngl 99 -ot exps=CPU -c <ctx> -b 4096 -ub 4096
+```
+→ prefill 283 t/s, gen 38-41 t/s (긴 컨텍스트), VRAM ~13GB. 전량 GPU 는 98.4 (Qwen).
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
