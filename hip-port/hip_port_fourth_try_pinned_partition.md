@@ -157,6 +157,47 @@ hit 든 miss 든 expert weight 를 매 토큰 GPU 로 옮기는 것이 지배 �
 "캐시 hit 증가/오버랩"이 아니라 **전송 자체 제거**(mul_mat_id가 캐시에서 직접 계산하는
 2107 경로, experts_on_host 필요) 가 유일한 개선 경로.
 
+### 실험 B2 — mul_mat_id 직접 캐시 (2107, experts_on_host) — 유일 개선 후보 검증 ❌
+
+"전송 제거" 후보 (copy_experts D2D 대신 mul_mat_id가 캐시에서 직접 계산)를 실측.
+HIP 빌드에서 2107 경로는 experts_on_host=false (copy_experts가 src0 를 GPU 로) 로 항상 꺼져 있었음.
+
+**활성화 작업:**
+- `GGML_CUDA_FORCE_CPU_EXPERTS=1` env 추가 (CUDA ref 의 d2h 실험 게이트 이식, 1960 skip 판별 전으로 이동)
+- `GGML_ASSERT(mul_mat_id_needs_sync)` 제거 (CUDA ref 와 동일 — decode 배치에서 MMVQ 가능해도
+  experts_on_host 경로 허용. **단 GGML_HIP_GRAPHS=OFF 필요**, stream sync 경로라 그래프 캡처와 충돌)
+- `temp_gpu.alloc` 을 루프 밖 1회로 (CUDA ref 구조 — 루프 안 miss 마다 alloc 시 pool assert)
+
+**실측 (Qwen3.6-35B-A3B-UD-Q4_K_S, 캐시 2000, 전량 GPU 로드 + FORCE_CPU d2h):**
+
+| 경로 | hit | gen t/s | 비고 |
+|---|---|---|---|
+| copy_experts (D2D) | 42.7% | 16.1-17.9 | `-ot exps=CPU` 오프로드 |
+| **2107 직접 캐시 (전송 0)** | **65.9%** | 15.4-15.5 | FORCE_CPU |
+
+**결론: 2107 경로가 hit 율 23pp 높음에도 속도가 비슷/느림.**
+hit 시 expert 전송이 0 이어도, **src0_slice 개별 커널 실행(전송 제거 경로)이 D2D + 기존 커널
+(copy_experts) 보다 느려서** 전체 성능이 오르지 않는다. → **"전송 제거" 도 개선 경로가 아님.**
+
+**한계**: FORCE_CPU 는 전량 GPU 상태에서 d2h 사본을 만들므로 expert(21GB) + 캐시로 OOM →
+캐시 2000 제한. 진짜 llama-model-loader 패치(expert host 배치 + GPU backend)면 캐시를 키울 수
+있지만, 계산 방식(src0_slice 커널)이 동일해 큰 개선은 기대하기 어렵다.
+
+**최종 판정 (모든 오프로드 방식):**
+
+| 방식 | gen t/s | 비고 |
+|---|---|---|
+| 전량 GPU (expert 전부 VRAM) | **98.4** | 이 모델의 진짜 성능 |
+| copy_experts + D2D 캐시 (hit 95%) | 22.7-24.3 | 캐시 16000 |
+| copy_experts + D2D 캐시 (hit 43%) | 16.1-17.9 | 캐시 2000 |
+| 2107 직접 캐시 (hit 66%) | 15.4-15.5 | 캐시 2000, 전송 0 |
+
+**오프로드는 본질적으로 4-6x 손해** — expert 전송(어떤 방식이든) + 개별 expert 커널 실행이
+전량 GPU 의 전체-텐서 커널보다 느리다. Qwen 21GB 는 VRAM 24GB 에 전량 로드가 정답.
+오프로드는 V4(85GB) 같은 VRAM 초과 모델에서만 불가피하고, 그때도 15-24 t/s 수준이 한계.
+
+**V4 (85GB) 실측이 유일하게 남은 검증** — 단 shard 00003 = 0B, 00001 = 5MB 로 불완전.
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:

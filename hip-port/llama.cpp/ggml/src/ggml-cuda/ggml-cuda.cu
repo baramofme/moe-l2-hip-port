@@ -1957,6 +1957,40 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
                 const char * env = getenv("GGML_CUDA_EXPERT_CACHE");
                 return env && env[0] != 0;
             }();
+            // [moe-l2 experiment 4th try] GGML_CUDA_FORCE_CPU_EXPERTS=1: force
+            // expert weights to host (D2H mirror) so the A3 per-expert cache
+            // pipeline (compute in place on cache hit, no input_cpy D2D) is
+            // exercised. Must run BEFORE the skip check below (which early-exits
+            // to the A3 block when experts are on host).
+            {
+                static const bool force_cpu_experts = []() {
+                    const char * env = getenv("GGML_CUDA_FORCE_CPU_EXPERTS");
+                    return env && env[0] == '1';
+                }();
+                if (force_cpu_experts) {
+                    static std::map<const void *, char *> d2h_cache;
+                    static std::mutex d2h_mtx;
+                    std::lock_guard<std::mutex> lock(d2h_mtx);
+                    auto it = d2h_cache.find(src0->data);
+                    if (it != d2h_cache.end()) {
+                        const_cast<ggml_tensor *>(src0)->data = it->second;
+                    } else {
+                        cudaPointerAttributes pa;
+                        if (cudaPointerGetAttributes(&pa, src0->data) == cudaSuccess && pa.type == cudaMemoryTypeDevice) {
+                            const size_t total = (size_t) ne02 * nb02;
+                            char * host_buf = nullptr;
+                            cudaError_t perr = cudaMallocHost(&host_buf, total);
+                            if (perr == cudaSuccess && host_buf) {
+                                cudaMemcpy(host_buf, src0->data, total, cudaMemcpyDeviceToHost);
+                                d2h_cache[src0->data] = host_buf;
+                                const_cast<ggml_tensor *>(src0)->data = host_buf;
+                                fprintf(stderr, "[FORCE-CPU] %s d2h %zu bytes -> host %p\n",
+                                    src0->name ? src0->name : "?", total, (void *)host_buf);
+                            }
+                        }
+                    }
+                }
+            }
             const bool skip = a3_on && ggml_cuda_experts_on_host(src0);
             if (skip) goto skip_early_returns;
         }
@@ -1990,7 +2024,9 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 skip_early_returns:
 
     // note: this path should not be reached when recording CUDA graphs, because it requires stream synchronization
-    GGML_ASSERT(ggml_cuda_mul_mat_id_needs_sync(dst, cc));
+    // [moe-l2 HIP] assert removed to allow the experts_on_host (A3 direct-cache)
+    // pipeline even when needs_sync=false (small decode batches). Safe with
+    // GGML_HIP_GRAPHS=OFF; mirrors the CUDA reference build.
     cudaStream_t stream = ctx.stream();
 
     GGML_ASSERT(nb12 % nb11 == 0);
@@ -2076,6 +2112,7 @@ skip_early_returns:
                 tmp_slice.ne[2] = 1;
                 const size_t expert_alloc = ggml_backend_buffer_get_alloc_size(src0->buffer, &tmp_slice);
                 ggml_cuda_pool_alloc<char> temp_gpu(ctx.pool());
+                temp_gpu.alloc(expert_alloc); // one alloc, reused across miss experts
 
                 for (int ei = 0; ei < (int)used_experts.size(); ei++) {
                     const int64_t i02 = used_experts[ei];
@@ -2107,7 +2144,6 @@ skip_early_returns:
                     const void * gpu_ptr = ggml_cuda_expert_cache_get(cache_key);
 
                     if (!gpu_ptr) {
-                        temp_gpu.alloc(expert_alloc);
                         cudaPointerAttributes pa;
                         const cudaError_t pe = cudaPointerGetAttributes(&pa, cpu_src);
                         const bool cpu_src_is_dev = (pe == cudaSuccess && pa.type == cudaMemoryTypeDevice);
