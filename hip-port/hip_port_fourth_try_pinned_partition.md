@@ -294,6 +294,36 @@ llama-server -ngl 99 -ot exps=CPU -c <ctx> -b 4096 -ub 4096
 ```
 → prefill 283 t/s, gen 38-41 t/s (긴 컨텍스트), VRAM ~13GB. 전량 GPU 는 98.4 (Qwen).
 
+### 실험 H — V4 실측 (DeepSeek-V4-Flash-UD-IQ2_M, 85GB) — 구조적 한계 확인 ✅
+
+**V4 3-shard 완성** (00001 5.2MB 메타데이터 전용 + 00002 50GB + 00003 41GB = ~91GB,
+`unsloth/DeepSeek-V4-Flash-0731-GGUF`). 2차 문서의 남은 작업 실측 완료.
+
+**실측 (24GB 7900 XTX, expert 오프로드 `-ot exps=CPU` + MIN_BATCH=1 + NO_STAGING):**
+
+| 캐시 슬롯 | hit | gen | VRAM | 비고 |
+|---|---|---|---|---|
+| 1000 | 36% | **5.0 t/s** | OK | 안정, RSS 56.8GB |
+| 3000 | 57% | 매우 느림 | 25.2GB 초과 | swap 스래싱, 실사용 불가 |
+
+**결과: crash 0 ✓ (85GB 모델이 24GB 카드에서 expert 오프로드로 동작), gen 5 t/s.**
+
+**구조적 한계 3중:**
+1. **expert 크기**: V4 expert ~10MB (gate/up/down) — Qwen 576KB 의 17배. 캐시 슬롯당 VRAM 소모 큼 →
+   24GB 카드에서 캐시 ~1000 슬롯(10GB) 이 현실적 한계 (3000 슬롯은 30GB → VRAM 초과).
+2. **spread routing**: DeepSeek 계열 라우팅이 분산 → 같은 expert 재사용 낮음 → 캐시 hit 본질적으로
+   낮음 (36%, 캐시 3000 이어도 57% — LRU thrash).
+3. **RAM 부족**: 모델 91GB > available 56GB → NO_EVICT (전량 상주) 불가 → evict 시 NVMe 재읽기.
+   swap 스래싱 발생.
+
+**2차 문서 목표 (crash 0 / RSS ≤ 28GB / ≥30 t/s)**: crash 0 달성, RSS 56.8GB / 5 t/s 미달.
+**≥30 t/s 는 이 하드웨어(24GB VRAM + 56GB RAM) 에서 expert 오프로드 구조로는 달성 불가** 실측 확인.
+
+**시사점**: V4 급 (85GB) 은 24GB 카드에서 오프로드 본질적 한계 (~5 t/s). 
+- 더 큰 VRAM (48GB+) 필요하거나, expert 압축/스파시티 활용 (라우팅 집중 유도) 필요.
+- persistent expert cache RFC (#24528, CPU MUL_MAT_ID + GPU hit 캐시) 는 miss 를 CPU 가 계산하므로
+  전송 병렬화 측면에서 유일한 구조적 대안 — V4 에서 재평가 가치 있음.
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
