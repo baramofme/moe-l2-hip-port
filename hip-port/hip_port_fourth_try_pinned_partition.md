@@ -96,6 +96,30 @@ pruning/merging으로 prefill FLOPs를 줄이는 접근. moe-l2의 DMA I/O 병�
 
 (실험 진행하며 기록)
 
+### ⚠️ 실험 A/B 결론 수정 (2026-08-28 후반) — math 테이블이 오히려 30-35% 손해
+
+실험 A 의 "캐시 슬롯 무의미" 와 2차 문서의 "테이블 hit 90% = 19.5-21.3" 은 **math 테이블
+(listed 게이트) 의 왜곡**이었음이 밝혀짐. 그래프 ON 복원 후 무테이블/테이블 A/B:
+
+| 설정 (그래프 ON) | hit | gen t/s |
+|---|---|---|
+| 전량 GPU | - | **98.4** |
+| **오프로드, 무테이블, 캐시 16000** | 92.9% | **33.5-34.6** |
+| 오프로드, 무테이블, 캐시 8000 | 77.8% | 26.0-27.2 |
+| 오프로드, +math 테이블, 캐시 16000 | 94.4% | 22.1-22.5 |
+| 오프로드, +math 테이블, 캐시 8000 | 82.9% | 22.4 |
+
+**원인**: math 테이블의 `listed` 게이트가 **테이블 밖 expert 를 캐시 참여에서 제외** →
+라우팅이 테이블 밖 expert 를 고르면 매 토큰 H2D(127µs) 반복 + 캐시 저장 안 됨.
+이 모델(일반 Q4_K_S)의 실제 라우팅은 math 도메인 top-100 과 불일치 → unlisted H2D 가 지배.
+**hit율이 높아도 (94.4%) 속도가 33% 낮음.** 2차 문서의 테이블 실측(19.5-21.3)도 이 손해 포함.
+
+**수정된 결론**:
+1. **캐시 슬롯은 무테이블에서 확실한 효과** (+28%, 26→34 t/s). 실험 A 의 "miss 제거 무의미" 는 테이블 왜곡.
+2. **그래프 ON 이 오프로드를 크게 개선** (+37%, 22.7→31-34). OFF 는 -11%(전량)/-37%(오프로드) 손해.
+3. **무테이블 + 캐시 16000 + 그래프 ON = 최선의 오프로드 33.5-34.6 t/s** (7900 XTX).
+4. 전량 GPU(98.4) 는 여전히 3x — Qwen 은 전량이 정답, 오프로드는 V4 급에서만.
+
 ### 실행 환경 확립 (2026-08-28)
 
 **중요 발견 — moe-l2 정상 실행 방법**: `GGML_OP_OFFLOAD_MIN_BATCH=1` + `-ot exps=CPU` 조합이 필수.
@@ -197,6 +221,58 @@ hit 시 expert 전송이 0 이어도, **src0_slice 개별 커널 실행(전송 �
 오프로드는 V4(85GB) 같은 VRAM 초과 모델에서만 불가피하고, 그때도 15-24 t/s 수준이 한계.
 
 **V4 (85GB) 실측이 유일하게 남은 검증** — 단 shard 00003 = 0B, 00001 = 5MB 로 불완전.
+
+### 실험 D — Wave64 (GGML_HIP_WAVE64, RDNA3) — ❌ 이 워크로드에서 기각
+
+llama.cpp #20934 논의의 Wave64 제안 이식 (CMake-only, off by default):
+`-mwavefrontsize64` + WMMA/MMQ/MMF/fattn 파일은 wave32 예외 (`-mno-wavefrontsize64`).
+커뮤니티 실측 (Qwen3.6-35B-A3B Q6_K): +4.5% (d0) ~ +12% (d32768).
+
+**실측 (Q4_K_S, 짧은 컨텍스트):**
+
+| 워크로드 | wave32 | wave64 |
+|---|---|---|
+| 전량 GPU | 98.4 | 96-97 (-1%) |
+| 오프로드 무테이블 캐시 16000 | 33.5-34.6 | 30.6-33.3 (-5%) |
+
+**결론: 기각.** 이유:
+1. mmq.cu (Q4_K_S 의 matmul 경로) 가 wave32 예외 → 양자화 matmul 은 wave64 미적용.
+2. wave64 이득은 dense/FP 경로 + 긴 컨텍스트(d32768) 에서만 — 커뮤니티도 Q6_K + 긴 컨텍스트에서 최대.
+3. 짧은 컨텍스트 Q4_K_S 에선 오히려 소폭 손해.
+
+### 실험 E — Vulkan 백엔드 — ⏸ SDK 없음
+
+#20934 실측: 7900 XTX 에서 Vulkan 이 ROCm 보다 tg 20-22% 빠름 (wave64 전용, RADV).
+시스템에 dev 헤더/glslc 없음 (sudo 필요) → 빌드 불가. 이후:
+`sudo apt install libvulkan-dev glslang-tools shaderc` 로 설치 후 재시도 가치 있음.
+(단 moe-l2 커스텀 expert 캐시는 HIP 전용 — 전량 GPU 비교만 가능)
+
+### 실험 F — ZLUDA / SageAttention / rocWMMA FA (웹 검증, 2026-08-28)
+
+**ZLUDA — ❌ 쓸 이유 없음 (웹 확인):**
+- ZLUDA 5/6 (2026-01, 2026-06): llama.cpp CUDA 백엔드 완전 지원, ROCm 7 지원.
+- **성능: "nearly identical to native ROCm" (<5% 차이)** — 병목(expert 전송/개별 커널)을 해결하지
+  않고 성능도 HIP 동급. HIP 포팅 무의미화 + 레이어 오버헤드만 추가. 기각.
+
+**SageAttention — ❌ llama.cpp 와 무관:**
+- SageAttention 은 PyTorch/Triton 라이브러리 (v1 은 Triton/ROCm 가능, v2 는 CUDA 전용).
+- llama.cpp(C++) 에 적용 불가. 설령 적용해도 decode 에서 attention <1% (beellama 실측:
+  "Attention is <1% of decode time on Qwen3.5-27B, Weight GEMM dominates >99%").
+- ComfyUI(이미지 생성) 의 7900 XTX 개선(19%) 은 diT 작업이라 무관. 기각.
+
+**GGML_HIP_ROCWMMA_FATTN — ⏸ 이식 필요:**
+- llama.cpp 최신 HIP 옵션 (#15021/#10879): rocWMMA 로 flash attention 가속,
+  7900 XTX prefill "huge performance jumps".
+- 이 hip-port(3b80fa9) 에 코드 없음 + /opt/rocm 에 librocwmma 없음 (헤더만).
+- 최신 llama.cpp 에서 fattn-rocwmma 코드 이식 + rocwmma 패키지 설치 후 실험 가능. 보류.
+
+**커뮤니티 실측과의 일치 (웹 검증 결과):**
+- 전량 vs 오프로드 격차: willitrunai "cards that fit whole model in VRAM run far faster
+  than ones that offload" — 7900 XTX Q4_K_M(오프로드) 30.8 t/s vs 내 33.5-34.6. 일치.
+- GGML_OP_OFFLOAD_MIN_BATCH: PR #18535 env, 기본 32. decode 강제 시 H2D 증가 (#20757) — 조건 의존적.
+- ROCm < Vulkan 20-22% (#20934), wave32 고정, HIP 커널이 NVIDIA 설계 공유 + ROCm BLAS 미최적화.
+- persistent expert cache RFC (#24528): CPU MUL_MAT_ID + GPU hit 캐시 구조 (4x, 미머지) — 내 2107
+  실험(전송 제거)과 다른 구조. V4 실측 시 이 구조도 후보.
 
 ### 실험 C — FreeToken (계획 갱신)
 
