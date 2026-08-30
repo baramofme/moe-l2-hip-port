@@ -329,6 +329,31 @@ llama-server -ngl 99 -ot exps=CPU -c <ctx> -b 4096 -ub 4096
 (RSS 77GB, 스왑 근접). 캐시 1000-1200 / hit 36-38% / gen 5-7 t/s 가 V4 의 현실적 한계 확정.
 RSS 제어하려면 staging(evict) 경로 필요하나, evict 시 NVMe 재읽기(1.7ms)로 속도 손실 (2차에서 확인).
 
+### ⚡ V4 경로 재발견 (2026-08-29) — STAGING(bounce) 이 V4 에서 4x, hit 99%
+
+2차 문서의 "직접 DMA > staging" 은 **모델 의존적**이었음. V4(큰 expert ~2.17MB) 실측:
+
+| 경로 | 캐시 | hit | gen t/s | 비고 |
+|---|---|---|---|---|
+| NO_STAGING (직접 DMA) | 1000-1200 | 36-38% | 5-7 | 캐시 miss 지속 |
+| **STAGING (bounce) + LRU 캡 1200** | 1200 | **99.1%** | **20.0-20.3** | RSS 76.4GB, swap 경계 |
+
+**STAGING 이 4x 빠름 + hit 99%.** 원인 추정: NO_STAGING 의 miss 경로
+(`ggml_backend_tensor_set_async`, unpinned mmap → H2D) + `cache_set`(D2D) 이 큰 expert 에서
+스트림/저장 문제로 캐시 hit 이 지속되지 않음 (36%). STAGING(pinned bounce) 은 캐시 저장이
+정상 → 두 번째 토큰부터 expert 재사용 (99%). Qwen(작은 expert) 에선 반대(직접 DMA 우위).
+
+**V4 최선 설정 확정:**
+```
+GGML_OP_OFFLOAD_MIN_BATCH=1 GGML_CUDA_EXPERT_CACHE=1 MOE_L2_CACHE_SLOTS=1200
+MOE_L2_N_LAYERS=43 MOE_L2_LRU_MAX_EXPERTS=600~1200
+llama-server -ngl 99 -ot exps=CPU -c <ctx>
+```
+(NO_STAGING **제거** — staging bounce 필수) → gen 20 t/s (85GB V4 @ 24GB 7900 XTX).
+
+**LRU 캡 600 vs 1200: gen 동일 (19.8-20.5 t/s), RSS 비슷 (74.7 vs 76.4GB) — RSS 는 캡으로 안 줄어듦**
+(모델 85GB > RAM 94GB 의 본질적 문제. expert hit 99% 라 스왑이 gen 에 영향 없음 — 3회 요청 안정).
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
