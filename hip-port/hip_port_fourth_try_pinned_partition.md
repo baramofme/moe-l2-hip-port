@@ -324,6 +324,11 @@ llama-server -ngl 99 -ot exps=CPU -c <ctx> -b 4096 -ub 4096
 - persistent expert cache RFC (#24528, CPU MUL_MAT_ID + GPU hit 캐시) 는 miss 를 CPU 가 계산하므로
   전송 병렬화 측면에서 유일한 구조적 대안 — V4 에서 재평가 가치 있음.
 
+**V4 미세 튜닝 (추가 실측):** 캐시 1200 + `MOE_L2_LRU_MAX_EXPERTS=1500` 도 hit 38% / gen 4.9-6.9 t/s
+(캐시 1000 과 동일). **NO_STAGING(직접 DMA) 경로에선 staging_evict_fn 이 nil 이라 RSS 캡이 무효**
+(RSS 77GB, 스왑 근접). 캐시 1000-1200 / hit 36-38% / gen 5-7 t/s 가 V4 의 현실적 한계 확정.
+RSS 제어하려면 staging(evict) 경로 필요하나, evict 시 NVMe 재읽기(1.7ms)로 속도 손실 (2차에서 확인).
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
