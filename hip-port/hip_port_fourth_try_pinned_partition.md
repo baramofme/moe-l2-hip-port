@@ -375,6 +375,16 @@ ubatch 아님). RAM 확보(스왑 제거) 또는 prefill 전문 최적화 필요
 prefill 6.4 → **7.6 t/s (+19%)**, gen 19.6 유지. 스왑 제거가 다음 개선 후보 (Docker 서버 8.5GB
 종료 등 RAM 확보).
 
+### master 조사 (직접, 2026-08-29) — 구조적 개선 미머지, 우리 포크가 이미 최선
+
+- **persistent expert cache RFC #24528**: 미머지 (master 에 --moe-cache 없음)
+- **prefetch #21067**: open, 미머지
+- master 유일 신기능: `--n-cpu-ffn` (#26622, FFN 레이어 수 기반 CPU 오프로드) — expert 를 CPU
+  계산 (우리 11 t/s 상태) 으로, copy_experts+staging+캐시 구조보다 후퇴.
+- **결론**: master 에는 expert 오프로드 구조 개선이 없음. moe-l2 포크(활성 expert GPU 복사 +
+  staging bounce + VRAM expert 캐시)가 이미 최선. V4 는 gen 20 / prefill 7.6 t/s 가 이
+  하드웨어(24GB VRAM + 94GB RAM) 의 실질 한계이고, 추가 레버는 RAM 확보(스왑 제거) 뿐.
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
