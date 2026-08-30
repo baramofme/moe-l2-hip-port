@@ -354,6 +354,23 @@ llama-server -ngl 99 -ot exps=CPU -c <ctx>
 **LRU 캡 600 vs 1200: gen 동일 (19.8-20.5 t/s), RSS 비슷 (74.7 vs 76.4GB) — RSS 는 캡으로 안 줄어듦**
 (모델 85GB > RAM 94GB 의 본질적 문제. expert hit 99% 라 스왑이 gen 에 영향 없음 — 3회 요청 안정).
 
+### 실험 I — 스펙 디코딩 (MTP / ngram) — MTP 유효, ngram 은 reasoning 모델과 비호환
+
+**MTP (Qwen3.6-35B-A3B-UD-IQ4_NL_MTP, 전량 GPU, `--spec-type draft-mtp --spec-draft-n-max 4`):**
+gen **117.6-122.0 t/s** (전량 GPU 98.4 대비 +20-24%). draft acceptance 63.4% (142/224,
+mean len 3.54) — 정상 검증. reasoning_content 정상 생성. **MTP 스펙 디코딩은 reasoning 모델에서 유효.**
+
+**ngram (V4, `--spec-type ngram-mod --spec-draft-n-max 4`):** gen 85-113 t/s 로 표시되지만
+**출력 파괴** — reasoning_content 가 `<<<<<<<<` 쓰레기 반복, content 비어있음. draft acceptance
+100% (검증 없이 채택되는 비정상). **ngram 스펙은 reasoning 모델(DeepSeek-V4) 과 비호환 — 기각.**
+
+**V4 는 MTP 텐서 없음** (GGUF nextn 0개) → MTP 스펙 불가. 별도 draft 모델
+(`--spec-draft-model`) 은 acceptance 낮을 것으로 예상. **V4 gen 20 / prefill 6.4 t/s 가 실질 한계.**
+
+**V4 prefill 병목 (추가 확인):** CPU 190% (staging memcpy, 2.17MB x 다수 expert) + SwapFree ~3MB
+(스왑 스래싱 — 모델 85GB > RAM 여유 56GB). -ub 512 vs 4096 차이 없음 (expert 전송이 지배,
+ubatch 아님). RAM 확보(스왑 제거) 또는 prefill 전문 최적화 필요.
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
