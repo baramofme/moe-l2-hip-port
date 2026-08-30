@@ -371,6 +371,10 @@ mean len 3.54) — 정상 검증. reasoning_content 정상 생성. **MTP 스펙 
 (스왑 스래싱 — 모델 85GB > RAM 여유 56GB). -ub 512 vs 4096 차이 없음 (expert 전송이 지배,
 ubatch 아님). RAM 확보(스왑 제거) 또는 prefill 전문 최적화 필요.
 
+**V4 prefill 미세 개선:** `MOE_L2_STAGING_PAIRS=8` (더블버퍼 증가 → memcpy/H2D 오버랩) →
+prefill 6.4 → **7.6 t/s (+19%)**, gen 19.6 유지. 스왑 제거가 다음 개선 후보 (Docker 서버 8.5GB
+종료 등 RAM 확보).
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
