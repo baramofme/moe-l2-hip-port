@@ -401,6 +401,22 @@ expert PAGEOUT 이 모델 mmap 에서 효과 미미 (RSS 는 expert 가 아니�
 
 ### 실험 C — FreeToken (계획 갱신)
 
+### ✅ V4 최종 실사용 설정 (2026-08-29 확정)
+
+**DeepSeek-V4-Flash-UD-IQ2_M (85GB) @ 7900 XTX 24GB + 94GB RAM:**
+
+```
+GGML_OP_OFFLOAD_MIN_BATCH=1 GGML_CUDA_EXPERT_CACHE=1 MOE_L2_CACHE_SLOTS=1200
+MOE_L2_N_LAYERS=43 MOE_L2_LRU_MAX_EXPERTS=1200 MOE_L2_STAGING_PAIRS=8
+llama-server -m DeepSeek-V4-Flash-UD-IQ2_M-00001-of-00003.gguf \
+  -ngl 99 -ot exps=CPU -c <4096~65536>
+```
+
+- **gen 20 t/s / prefill 7.6 t/s** (NO_STAGING **제거 필수** — staging bounce 가 hit 99% 보장)
+- V4 3-shard 완성: 00001(5.2MB 메타 전용) + 00002(50GB) + 00003(41GB) = 85GB
+- 캐시 1200-2000 동일 성능 (hit 99%), VRAM 17.7/24GB (여유)
+- 스왑 (8GB) 은 85GB 모델 > RAM 여유 의 근본 원인 — 128GB RAM 또는 IQ1_S 가 유일 해법
+
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
 - FreeToken은 prefill FLOPs 감축 (프롬프트 토큰 pruning/merging) — decode expert 전송 병목과 직교.
 - 현재 주요 병목은 decode의 expert 전송 (전량 GPU 98.4 vs 오프로드 22.4)이므로,
