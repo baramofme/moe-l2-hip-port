@@ -385,6 +385,20 @@ prefill 6.4 → **7.6 t/s (+19%)**, gen 19.6 유지. 스왑 제거가 다음 개
   staging bounce + VRAM expert 캐시)가 이미 최선. V4 는 gen 20 / prefill 7.6 t/s 가 이
   하드웨어(24GB VRAM + 94GB RAM) 의 실질 한계이고, 추가 레버는 RAM 확보(스왑 제거) 뿐.
 
+### V4 자원 실측 (2026-08-29) — VRAM 여유 / RAM 근본 부족
+
+| 자원 | V4 (캐시 1200) | V4 (캐시 2000) | 판정 |
+|---|---|---|---|
+| VRAM | 16.7/24GB | 17.7/24GB | **여유 6.3-7.3GB — 캐시 hit 99% 라 더 키워도 무의미** |
+| V4 RSS | 60.7GB | 58.0GB | 85GB 모델의 상주 페이지, 캐시/evict 와 무관 |
+| swap | 8GB 중 거의 다 사용 | 동일 | **모델 85GB > RAM 여유 — 근본적** |
+
+**hit-evict 실험 (캐시 hit expert PAGEOUT): RSS 60.7 → 58.3GB (미미), 첫 prefill 하락 → 원복.**
+expert PAGEOUT 이 모델 mmap 에서 효과 미미 (RSS 는 expert 가 아니라 모델 상주 페이지가 지배).
+
+**결론**: VRAM 은 다 안 씀 (캐시 여유). RAM 은 85GB 모델이 근본적으로 초과 → 128GB RAM 또는
+더 작은 quant(IQ1_S) 가 유일한 해법. gen 20 / prefill 7.6(PAIRS 8) t/s 가 이 하드웨어 최선.
+
 ### 실험 C — FreeToken (계획 갱신)
 
 3차 문서 (`hip_port_third_try_freetoken_260828.md`) 계획 이어서. **실측 전제가 변경됨**:
